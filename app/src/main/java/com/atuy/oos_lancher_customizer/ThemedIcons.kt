@@ -198,7 +198,7 @@ class ThemedIcons : XposedModule() {
 
         runCatching {
             val previewManagerClass = Class.forName(PREVIEW_MANAGER_CLASS, false, classLoader)
-            hookAllNamedMethods(previewManagerClass, "setDrawable", "folder-setDrawable") { chain ->
+            hookOptionalNamedMethods(previewManagerClass, "setDrawable", "folder-setDrawable") { chain ->
                 val args = chain.args.toTypedArray()
                 val result = chain.proceed()
                 afterPreviewSetDrawable(chain.thisObject, args)
@@ -216,7 +216,7 @@ class ThemedIcons : XposedModule() {
         // manager override that does not have to call super#setDrawable.
         runCatching {
             val bigManager = Class.forName(BIG_PREVIEW_MANAGER_CLASS, false, classLoader)
-            hookAllNamedMethods(bigManager, "setDrawable", "big-preview-setDrawable") { chain ->
+            hookOptionalNamedMethods(bigManager, "setDrawable", "big-preview-setDrawable") { chain ->
                 val args = chain.args.toTypedArray()
                 val result = chain.proceed(args)
                 afterPreviewSetDrawable(chain.thisObject, args)
@@ -230,7 +230,7 @@ class ThemedIcons : XposedModule() {
 
         runCatching {
             val iconClass = Class.forName(BIG_FOLDER_ITEM_CLASS, false, classLoader)
-            hookAllNamedMethods(iconClass, "setDrawable", "big-item-setDrawable") { chain ->
+            hookOptionalNamedMethods(iconClass, "setDrawable", "big-item-setDrawable") { chain ->
                 val args = chain.args.toTypedArray()
                 beforeBigFolderSetDrawable(chain.thisObject, args)
                 chain.proceed(args)
@@ -249,6 +249,11 @@ class ThemedIcons : XposedModule() {
                     reconcileBigFolderItem(chain.thisObject)
                     result
                 }
+            }
+            // Some versions draw the backing field directly rather than calling a getter.
+            hookOptionalNamedMethods(iconClass, "onDraw", "big-item-ready-draw") { chain ->
+                reconcileBigFolderItem(chain.thisObject)
+                chain.proceed()
             }
             moduleLog("hooked BigFolderItemIcon drawable/binding paths")
         }.onFailure {
@@ -352,6 +357,7 @@ class ThemedIcons : XposedModule() {
     private fun reconcileBigFolderItem(owner: Any?) {
         val view = owner as? View ?: return
         val original = readField(view, "drawable") as? Drawable ?: return
+        if (ThemedIconPolicy.isThemedDrawable(original)) return
         val themed = themedBigFolderDrawable(view, original) ?: return
         if (themed !== original) {
             writeField(view, "drawable", themed)
@@ -415,6 +421,7 @@ class ThemedIcons : XposedModule() {
         val original = when {
             drawable == null || ThemedIconPolicy.isKnownThemedDrawable(drawable) ->
                 previous?.source?.takeIf { it.key == key }
+            previous?.source?.key == key && previous.source.original.get() === drawable -> previous.source
             else -> originalBinding(key, drawable, resolveItemType(itemInfo) != 0)
         }
         // Remember the binding before checking folder ownership or context:

@@ -49,13 +49,28 @@ internal class IconEnvironment(
     }
     private var current = appearance()
 
+    private fun resetSourceRetries() {
+        handler.removeCallbacks(retryTask)
+        retryScheduled = false
+        retryAttempts = 0
+    }
+
+    private fun onUserUnlocked() {
+        // Do not discard successful APK-based renders just because CE storage
+        // became available. If the palette changed, perform the normal refresh.
+        if (appearance() != current) {
+            changed()
+        } else {
+            resetSourceRetries()
+            retry()
+        }
+    }
+
     private fun changed(force: Boolean = false) {
         val next = appearance()
         if (!force && next == current) return
         current = next
-        handler.removeCallbacks(retryTask)
-        retryScheduled = false
-        retryAttempts = 0
+        resetSourceRetries()
         invalidate()
         if (!scheduled) {
             scheduled = true
@@ -76,7 +91,7 @@ internal class IconEnvironment(
     }
     private val unlocked = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_USER_UNLOCKED) changed(true)
+            if (intent?.action == Intent.ACTION_USER_UNLOCKED) onUserUnlocked()
         }
     }
     private val packages = object : LauncherApps.Callback() {
