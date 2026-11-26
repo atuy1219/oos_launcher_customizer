@@ -46,7 +46,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     compileOnly(libs.libxposed.api)
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("org.robolectric:robolectric:4.18.1")
 }
 
 // Robolectric downloads instrumented Android SDKs independently of Gradle's repositories.
