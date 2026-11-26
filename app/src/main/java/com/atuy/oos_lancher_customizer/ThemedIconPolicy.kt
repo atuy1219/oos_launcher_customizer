@@ -195,12 +195,18 @@ internal object ThemedIconPolicy {
      * PreviewItemManager#setDrawable has no BubbleTextView display flag. Use its actual
      * folder icon, not only the child's ItemInfo, to reject drawer-category previews.
      */
+    fun folderIconForPreview(owner: Any?): View? {
+        if (owner == null) return null
+        return (call(owner, "getFolderIcon") as? View)
+            ?: (read(owner, "mIcon") as? View)
+            ?: (read(owner, "mFolderIcon") as? View)
+    }
+
     fun shouldThemeFolderPreview(owner: Any?, item: Any?): Boolean {
-        if (!shouldThemeItem(item) || owner == null) return false
-        val folderIcon = (call(owner, "getFolderIcon") ?: read(owner, "mIcon")) as? View
-            ?: return false
+        if (!shouldThemeItem(item)) return false
+        val folderIcon = folderIconForPreview(owner) ?: return false
         if (hasExcludedAncestor(folderIcon)) return false
-        val folderInfo = call(folderIcon, "getInfo") ?: folderIcon.tag ?: return false
+        val folderInfo = call(folderIcon, "getInfo") ?: read(folderIcon, "mInfo") ?: folderIcon.tag ?: return false
         return isHomeContainer((read(folderInfo, "container") as? Number)?.toInt())
     }
 

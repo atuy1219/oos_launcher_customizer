@@ -61,6 +61,36 @@ class ThemedIcons : XposedModule() {
     private val bubbles = Collections.synchronizedMap(WeakHashMap<View, Binding>())
     private val folders = Collections.synchronizedMap(WeakHashMap<View, Binding>())
     private val previews = Collections.synchronizedMap(WeakHashMap<Any, PreviewBinding>())
+    private val pendingPreviews = Collections.synchronizedMap(
+        WeakHashMap<Any, MutableMap<Any, Unit>>()
+    )
+
+    private fun markPreviewPending(owner: Any, params: Any) {
+        synchronized(pendingPreviews) {
+            pendingPreviews.getOrPut(owner) { WeakHashMap() }[params] = Unit
+        }
+    }
+
+    private fun clearPreviewPending(owner: Any, params: Any) {
+        synchronized(pendingPreviews) {
+            pendingPreviews[owner]?.remove(params)
+        }
+    }
+
+    private fun reconcilePendingPreviews(owner: Any?) {
+        if (owner == null) return
+        val pending = synchronized(pendingPreviews) {
+            pendingPreviews[owner]?.keys?.toList().orEmpty()
+        }
+        for (params in pending) {
+            val entry = previews[params] ?: continue
+            if (entry.owner.get() !== owner) {
+                clearPreviewPending(owner, params)
+                continue
+            }
+            afterPreviewSetDrawable(owner, arrayOf(params, entry.item))
+        }
+    }
 
     private fun prepare(context: Context) {
         if (environment != null) return
@@ -108,13 +138,20 @@ class ThemedIcons : XposedModule() {
             }.onFailure { moduleLog("Cannot refresh themed home icon", it) }
         }
         val items = synchronized(folders) { folders.keys.toList() }
-        for (view in items) if (view.isAttachedToWindow) reconcileBigFolderItem(view)
+        for (view in items) {
+            // Some large-folder child Views are drawn by their parent without
+            // being attached independently.
+            val parent = invokeNoArg(view, "getParentFolderIcon") as? View
+            if (view.isAttachedToWindow || parent?.isAttachedToWindow == true) {
+                reconcileBigFolderItem(view)
+                parent?.invalidate()
+            }
+        }
         val entries = synchronized(previews) { previews.entries.map { it.key to it.value } }
         for ((params, entry) in entries) {
             val owner = entry.owner.get() ?: continue
             afterPreviewSetDrawable(owner, arrayOf(params, entry.item))
-            val folder = (invokeNoArg(owner, "getFolderIcon") ?: readField(owner, "mIcon")) as? View
-            folder?.invalidate()
+            ThemedIconPolicy.folderIconForPreview(owner)?.invalidate()
         }
     }
 
@@ -149,6 +186,15 @@ class ThemedIcons : XposedModule() {
             chain.proceed(args)
         }
         moduleLog("hooked BubbleTextView#setIcon")
+        // setIcon can precede tag/item binding. Reconcile on the binding
+        // completion and attachment, without touching draw or animation frames.
+        for (name in listOf("applyFromWorkspaceItem", "applyFromWorkspaceItemInfo", "onAttachedToWindow")) {
+            hookOptionalNamedMethods(bubbleTextViewClass, name, "bubble-ready-$name") { chain ->
+                val result = chain.proceed()
+                reconcileBubble(chain.thisObject)
+                result
+            }
+        }
 
         runCatching {
             val previewManagerClass = Class.forName(PREVIEW_MANAGER_CLASS, false, classLoader)
@@ -158,6 +204,7 @@ class ThemedIcons : XposedModule() {
                 afterPreviewSetDrawable(chain.thisObject, args)
                 result
             }
+            installPreviewDrawHooks(previewManagerClass, "folder")
             moduleLog("hooked PreviewItemManager#setDrawable")
         }.onFailure {
             moduleLog("PreviewItemManager hook skipped: ${it.message}")
@@ -175,6 +222,7 @@ class ThemedIcons : XposedModule() {
                 afterPreviewSetDrawable(chain.thisObject, args)
                 result
             }
+            installPreviewDrawHooks(bigManager, "big-preview")
             moduleLog("hooked BigFolderPreviewItemManager#setDrawable")
         }.onFailure {
             moduleLog("big preview hook skipped: ${it.message}", it)
@@ -188,15 +236,15 @@ class ThemedIcons : XposedModule() {
                 chain.proceed(args)
             }
             for (methodName in listOf("getDrawable", "getDrawableByIndex")) {
-                hookAllNamedMethods(iconClass, methodName, "big-item-$methodName") { chain ->
+                hookOptionalNamedMethods(iconClass, methodName, "big-item-$methodName") { chain ->
                     val result = chain.proceed()
                     themedBigFolderDrawable(chain.thisObject, result as? Drawable) ?: result
                 }
             }
             // setItemInfo/setParentFolderIcon may be called after setDrawable.
             // Reconcile the stored field once both bindings become available.
-            for (methodName in listOf("setItemInfo", "setParentFolderIcon")) {
-                hookAllNamedMethods(iconClass, methodName, "big-item-$methodName") { chain ->
+            for (methodName in listOf("setItemInfo", "setParentFolderIcon", "onAttachedToWindow")) {
+                hookOptionalNamedMethods(iconClass, methodName, "big-item-$methodName") { chain ->
                     val result = chain.proceed()
                     reconcileBigFolderItem(chain.thisObject)
                     result
@@ -220,6 +268,35 @@ class ThemedIcons : XposedModule() {
         }
 
 
+    }
+
+    private fun hookOptionalNamedMethods(
+        clazz: Class<*>, methodName: String, hookIdPrefix: String,
+        interceptor: (XposedInterface.Chain) -> Any?
+    ) {
+        if (clazz.declaredMethods.none { it.name == methodName }) return
+        runCatching { hookAllNamedMethods(clazz, methodName, hookIdPrefix, interceptor) }
+            .onFailure { moduleLog("optional hook skipped: ${clazz.name}#$methodName", it) }
+    }
+
+    private fun installPreviewDrawHooks(clazz: Class<*>, prefix: String) {
+        for (name in listOf("draw", "drawPreview")) {
+            hookOptionalNamedMethods(clazz, name, "$prefix-ready-$name") { chain ->
+                reconcilePendingPreviews(chain.thisObject)
+                chain.proceed()
+            }
+        }
+    }
+
+    private fun reconcileBubble(owner: Any?) {
+        val view = owner as? View ?: return
+        val item = ThemedIconPolicy.itemForView(view) ?: readField(view, "mInfo") ?: return
+        if (!ThemedIconPolicy.shouldThemeView(view, item)) return
+        val drawable = invokeNoArg(view, "getIcon") as? Drawable ?: return
+        if (ThemedIconPolicy.isThemedDrawable(drawable)) return
+        runCatching {
+            CachedReflection.method(view.javaClass, "setIcon", Drawable::class.java)?.invoke(view, drawable)
+        }.onFailure { moduleLog("Cannot reconcile bound home icon", it) }
     }
 
     private fun hookAllNamedMethods(
@@ -326,27 +403,48 @@ class ThemedIcons : XposedModule() {
     }
 
     private fun afterPreviewSetDrawable(owner: Any?, args: Array<Any?>) {
+        if (owner == null) return
         val previewParams = args.firstOrNull() ?: return
         val itemInfo = args.getOrNull(1) ?: return
         val pkg = resolvePackageName(itemInfo) ?: return
-        if (!shouldApplyToPackage(pkg) || !ThemedIconPolicy.shouldThemeFolderPreview(owner, itemInfo)) return
+        if (!shouldApplyToPackage(pkg)) return
 
-        val drawable = readField(previewParams, "drawable") as? Drawable ?: return
-        val context = resolveContext(owner) ?: return
-        prepare(context)
+        val drawable = readField(previewParams, "drawable") as? Drawable
         val key = ThemedIconPolicy.itemKey(itemInfo)
-        val original = if (ThemedIconPolicy.isKnownThemedDrawable(drawable)) {
-            previews[previewParams]?.source?.takeIf { it.key == key }
-        } else originalBinding(key, drawable, resolveItemType(itemInfo) != 0)
-        if (owner != null) previews[previewParams] = PreviewBinding(WeakReference(owner), itemInfo, original)
-        if (ThemedIconPolicy.isThemedDrawable(drawable)) {
-            ThemedIconPolicy.rememberDrawable(drawable, itemInfo)
+        val previous = previews[previewParams]
+        val original = when {
+            drawable == null || ThemedIconPolicy.isKnownThemedDrawable(drawable) ->
+                previous?.source?.takeIf { it.key == key }
+            else -> originalBinding(key, drawable, resolveItemType(itemInfo) != 0)
+        }
+        // Remember the binding before checking folder ownership or context:
+        // both can be populated after setDrawable during the initial model bind.
+        previews[previewParams] = PreviewBinding(WeakReference(owner), itemInfo, original)
+        val folder = ThemedIconPolicy.folderIconForPreview(owner)
+        val context = folder?.context ?: resolveContext(owner)
+        if (context != null) prepare(context)
+        if (drawable == null || context == null ||
+            !ThemedIconPolicy.shouldThemeFolderPreview(owner, itemInfo)) {
+            markPreviewPending(owner, previewParams)
             return
         }
-        val themed = themedDrawable(context, pkg, drawable, itemInfo, original) ?: return
-        ThemedIconPolicy.rememberDrawable(themed, itemInfo)
+        if (ThemedIconPolicy.isThemedDrawable(drawable)) {
+            ThemedIconPolicy.rememberDrawable(drawable, itemInfo)
+            clearPreviewPending(owner, previewParams)
+            return
+        }
+        val themed = themedDrawable(context, pkg, drawable, itemInfo, original)
+        if (themed == null) {
+            markPreviewPending(owner, previewParams)
+            return
+        }
         themed.bounds = drawable.bounds
+        // A replaced preview drawable must notify the owning folder, not the
+        // discarded original drawable's callback.
+        themed.callback = drawable.callback ?: folder
         writeField(previewParams, "drawable", themed)
+        ThemedIconPolicy.rememberDrawable(themed, itemInfo)
+        clearPreviewPending(owner, previewParams)
 
     }
 
@@ -466,7 +564,12 @@ class ThemedIcons : XposedModule() {
     ): Drawable? {
         return runCatching {
             val pm = context.packageManager
-            val manifest = pm.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(0))
+            // APK resources can be available before credential unlock. Query
+            // both Direct Boot activity classes explicitly instead of using the
+            // default state-dependent filtering.
+            val flags = PackageManager.MATCH_DIRECT_BOOT_AWARE.toLong() or
+                PackageManager.MATCH_DIRECT_BOOT_UNAWARE.toLong()
+            val manifest = pm.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(flags))
             val appInfo = if (user == android.os.Process.myUserHandle()) {
                 manifest.applicationInfo
             } else {
@@ -551,12 +654,14 @@ class ThemedIcons : XposedModule() {
         context: Context, pkg: String, fallback: Drawable, item: Any,
         originalBinding: Binding? = null
     ): Drawable? {
-        // Before credential unlock the launcher may bind placeholders or cached
-        // flattened icons. Preserve those until authoritative resources are available.
-        val unlocked = runCatching {
-            context.getSystemService(UserManager::class.java)?.isUserUnlocked == true
-        }.getOrDefault(false)
-        if (!unlocked) return null
+        // Ordinary apps use only verified APK resources, which do not require
+        // credential unlock. Launcher-owned shortcut artwork is different.
+        if (isShortcutLikeItem(item)) {
+            val unlocked = runCatching {
+                context.getSystemService(UserManager::class.java)?.isUserUnlocked == true
+            }.getOrDefault(false)
+            if (!unlocked) return null
+        }
         val component = resolveComponentName(item)
         val user = resolveUserHandle(item) ?: android.os.Process.myUserHandle()
         val shortcutId = (invokeNoArg(item, "getDeepShortcutId") as? String)

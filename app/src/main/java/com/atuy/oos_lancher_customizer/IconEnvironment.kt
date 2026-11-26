@@ -23,7 +23,7 @@ internal class IconEnvironment(
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var scheduled = false
-    private val retryDelays = longArrayOf(500L, 1500L, 3000L, 6000L)
+    private val retryDelays = longArrayOf(0L, 100L, 500L, 2000L)
     private var retryAttempts = 0
     private var retryScheduled = false
     private val retryTask = Runnable {
