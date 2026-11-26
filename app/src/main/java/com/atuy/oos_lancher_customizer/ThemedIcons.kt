@@ -10,7 +10,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.PorterDuff
 import android.graphics.Rect
 import android.graphics.Shader
 import android.graphics.drawable.AdaptiveIconDrawable
@@ -48,6 +47,8 @@ class ThemedIcons : XposedModule() {
     }
 
     private val iconCache = IconBitmapCache()
+    private val oplusSource = OplusMonochromeSource()
+    private val monoCache = PersistentMonoCache()
     @Volatile private var environment: IconEnvironment? = null
 
     private data class Binding(
@@ -179,6 +180,7 @@ class ThemedIcons : XposedModule() {
     }
 
     private fun installHooks(classLoader: ClassLoader) {
+        oplusSource.initialize(classLoader)
         val bubbleTextViewClass = Class.forName(BTV_CLASS, false, classLoader)
         hookAllNamedMethods(bubbleTextViewClass, "setIcon", "bubble-setIcon") { chain ->
             val args = chain.args.toTypedArray()
@@ -285,9 +287,22 @@ class ThemedIcons : XposedModule() {
     }
 
     private fun installPreviewDrawHooks(clazz: Class<*>, prefix: String) {
-        for (name in listOf("draw", "drawPreview")) {
+        for (name in listOf("draw", "drawParams", "drawForFolderIconSnapshot", "buildPreviewDrawableForPage")) {
             hookOptionalNamedMethods(clazz, name, "$prefix-ready-$name") { chain ->
-                reconcilePendingPreviews(chain.thisObject)
+                val owner = chain.thisObject
+                reconcilePendingPreviews(owner)
+                // ColorOS 17 builds a RenderNode from an ArrayList of params.
+                // Cloned params may never have passed setDrawable.
+                for (arg in chain.args) {
+                    if (arg !is ArrayList<*>) continue
+                    for (params in arg.toList()) {
+                        if (params == null) continue
+                        val item = readField(params, "item") ?: continue
+                        val drawable = readField(params, "drawable") as? Drawable ?: continue
+                        if (ThemedIconPolicy.isThemedDrawable(drawable)) continue
+                        afterPreviewSetDrawable(owner, arrayOf(params, item))
+                    }
+                }
                 chain.proceed()
             }
         }
@@ -412,6 +427,7 @@ class ThemedIcons : XposedModule() {
         if (owner == null) return
         val previewParams = args.firstOrNull() ?: return
         val itemInfo = args.getOrNull(1) ?: return
+        if (!ThemedIconPolicy.shouldThemeItem(itemInfo)) return
         val pkg = resolvePackageName(itemInfo) ?: return
         if (!shouldApplyToPackage(pkg)) return
 
@@ -452,7 +468,20 @@ class ThemedIcons : XposedModule() {
         writeField(previewParams, "drawable", themed)
         ThemedIconPolicy.rememberDrawable(themed, itemInfo)
         clearPreviewPending(owner, previewParams)
+        invalidateFolderPreviewCache(owner, folder)
 
+    }
+
+    private fun invalidateFolderPreviewCache(owner: Any, folder: View?) {
+        // invalidate() alone redraws the old RenderNode. The exact method and
+        // fields below are present in System Launcher 17.3.12.
+        runCatching {
+            val clear = CachedReflection.method(owner.javaClass, "clearPreviewDrawables")
+            if (clear != null) clear.invoke(owner)
+            else (readField(owner, "mPreviewCacheDrawables") as? MutableMap<*, *>)?.clear()
+            (readField(owner, "mResizeCacheDrawable") as? MutableMap<*, *>)?.clear()
+        }.onFailure { moduleLog("Cannot invalidate folder preview cache", it) }
+        folder?.invalidate()
     }
 
     private fun beforeFloatingSetIcon(owner: Any?, args: Array<Any?>) {
@@ -682,6 +711,19 @@ class ThemedIcons : XposedModule() {
             }
         }
         val bitmap = iconCache.getOrLoad(key) {
+            val diskKey = if (!isShortcutLikeItem(item) && component != null &&
+                user == android.os.Process.myUserHandle()) {
+                monoCache.key(context, component, user)
+            } else null
+            if (diskKey != null) {
+                monoCache.read(context, diskKey)?.let { alpha ->
+                    try {
+                        return@getOrLoad colorizeMono(context, alpha)
+                    } finally {
+                        alpha.recycle()
+                    }
+                }
+            }
             val unthemed = if (ThemedIconPolicy.isKnownThemedDrawable(fallback)) {
                 originalBinding?.restore(context) ?: fallback
             } else fallback
@@ -691,7 +733,7 @@ class ThemedIcons : XposedModule() {
                 return@getOrLoad null
             }
             generateRawThemedBitmap(context, pkg, source,
-                isShortcutLikeItem(item), component)
+                isShortcutLikeItem(item), component, diskKey)
         } ?: return null
         return bitmap.toDrawable(context.resources)
     }
@@ -731,107 +773,105 @@ class ThemedIcons : XposedModule() {
         pkg: String,
         original: Drawable,
         isShortcut: Boolean,
-        component: ComponentName?
+        component: ComponentName?,
+        diskKey: String?
     ): Bitmap? {
         val hasNativeMono = (original as? AdaptiveIconDrawable)?.monochrome != null
-        if (!isShortcut && !hasNativeMono && !Oos15MonochromeAssets.isReady(context)) {
+        val oplus = if (!isShortcut && !hasNativeMono && component != null) {
+            oplusSource.load(context, component)
+        } else OplusMonochromeSource.Result(null, false)
+        if (oplus.retry) {
             environment?.requestSourceRetry()
             return null
         }
-        val legacyBitmap = if (!isShortcut && !hasNativeMono) {
+        if (!isShortcut && !hasNativeMono && oplus.drawable == null &&
+            !Oos15MonochromeAssets.isReady(context)) {
+            environment?.requestSourceRetry()
+            return null
+        }
+        val legacy = if (!isShortcut && !hasNativeMono && oplus.drawable == null) {
             Oos15MonochromeAssets.load(context, pkg, component)
         } else null
-        val pixelBitmap = if (!isShortcut && legacyBitmap == null && !hasNativeMono) {
+        val pixel = if (!isShortcut && !hasNativeMono && oplus.drawable == null && legacy == null) {
             PixelLauncherThemedAssets.load(pkg)
         } else null
-        val isDarkMode = isNightMode(context)
-        val bgColor = context.getColor(
-            if (isDarkMode) android.R.color.system_neutral1_800
-            else android.R.color.system_accent1_100
-        )
-        val iconColor = context.getColor(
-            if (isDarkMode) android.R.color.system_accent1_100
-            else android.R.color.system_accent1_600
-        )
-
-        val monoDrawable: Drawable = when {
-            legacyBitmap != null -> BitmapDrawable(context.resources, legacyBitmap).mutate()
-            pixelBitmap != null -> BitmapDrawable(context.resources, pixelBitmap).mutate()
-            else -> {
-                val alpha = runCatching {
-                    Pixel17MonochromeRenderer.render(
-                        original, 192, context.resources, matchThemeBackground = true,
-                        requireNative = hasNativeMono
-                    )
+        val sourceName = when {
+            hasNativeMono -> "apk-native"
+            oplus.drawable != null -> "oplus-live"
+            legacy != null -> "oos15"
+            pixel != null -> "pixel"
+            else -> "generated"
+        }
+        val alpha = runCatching {
+            when {
+                oplus.drawable != null -> rasterizeGlyph(context, oplus.drawable, 1f)
+                legacy != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, legacy),
+                    Oos15MonochromeAssets.GLYPH_SCALE)
+                pixel != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, pixel),
+                    PixelLauncherThemedAssets.GLYPH_SCALE)
+                else -> runCatching {
+                    Pixel17MonochromeRenderer.render(original, PersistentMonoCache.SIZE, context.resources,
+                        matchThemeBackground = true, requireNative = hasNativeMono)
                 }.recoverCatching {
                     if (hasNativeMono) throw it
                     val software = extractSoftwareBitmap(original) ?: throw it
-                    Pixel17MonochromeRenderer.render(
-                        BitmapDrawable(context.resources, software), 192, context.resources,
-                        matchThemeBackground = true
-                    )
-                }.onFailure {
-                    moduleLog("skip Pixel mono generation pkg=$pkg: ${it.message}")
-                }.getOrNull() ?: return null
-                BitmapDrawable(context.resources, alpha)
+                    Pixel17MonochromeRenderer.render(BitmapDrawable(context.resources, software),
+                        PersistentMonoCache.SIZE, context.resources, matchThemeBackground = true)
+                }.getOrThrow()
             }
+        }.onFailure {
+            moduleLog("skip mono render pkg=$pkg: ${it.message}")
+            environment?.requestSourceRetry()
+        }.getOrNull() ?: return null
+        try {
+            val result = colorizeMono(context, alpha)
+            // Only persist if the sources still match the key captured before rendering.
+            if (diskKey != null && component != null &&
+                diskKey == monoCache.key(context, component, android.os.Process.myUserHandle())) {
+                monoCache.write(context, diskKey, alpha)
+            }
+            moduleLog("theme source pkg=$pkg: $sourceName")
+            return result
+        } finally {
+            alpha.recycle()
         }
+    }
 
-        val size = 192
+    private fun rasterizeGlyph(context: Context, source: Drawable, scale: Float): Bitmap {
+        val glyph = source.constantState?.newDrawable(context.resources)?.mutate() ?: source
+        val old = Rect(glyph.bounds)
+        val size = PersistentMonoCache.SIZE
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ALPHA_8)
+        try {
+            val side = (size * scale).roundToInt()
+            val offset = (size - side) / 2
+            glyph.setBounds(offset, offset, offset + side, offset + side)
+            glyph.draw(Canvas(bitmap))
+            return bitmap
+        } catch (error: Throwable) {
+            bitmap.recycle()
+            throw error
+        } finally {
+            glyph.bounds = old
+        }
+    }
+
+    private fun colorizeMono(context: Context, alpha: Bitmap): Bitmap {
+        val dark = isNightMode(context)
+        val bgColor = context.getColor(if (dark) android.R.color.system_neutral1_800
+            else android.R.color.system_accent1_100)
+        val iconColor = context.getColor(if (dark) android.R.color.system_accent1_100
+            else android.R.color.system_accent1_600)
+        val size = PersistentMonoCache.SIZE
         val bitmap = createBitmap(size, size)
         try {
-        val canvas = Canvas(bitmap)
-
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = bgColor }
-        val radius = size * 0.5f
-        canvas.drawCircle(size * 0.5f, size * 0.5f, radius, bgPaint)
-
-        monoDrawable.setTint(iconColor)
-        monoDrawable.setTintMode(PorterDuff.Mode.SRC_IN)
-
-        val iconSize = when {
-            // OEM PNG contains intrinsic padding: retain the proven 1.5x zoom.
-            legacyBitmap != null -> (
-                size * Oos15MonochromeAssets.GLYPH_SCALE
-            ).roundToInt()
-            // Both Pixel and Oplus IconProvider pad theme fallback vectors
-            // by 20% on each side. AdaptiveIconDrawable's extra foreground
-            // inset is compensated at render time: net 60% of this circle.
-            pixelBitmap != null -> (
-                size * PixelLauncherThemedAssets.GLYPH_SCALE
-            ).roundToInt()
-            // The Pixel renderer already applies the negative inset to both
-            // native and synthetic layers. Do not apply a second expansion.
-            else -> size
-        }
-        val offset = (size - iconSize) / 2
-
-        runCatching {
-            monoDrawable.setBounds(offset, offset, offset + iconSize, offset + iconSize)
-            monoDrawable.draw(canvas)
-        }.onFailure {
-            val fallback = extractSoftwareBitmap(monoDrawable)
-            if (fallback != null) {
-                canvas.drawBitmap(
-                    fallback,
-                    Rect(0, 0, fallback.width, fallback.height),
-                    Rect(offset, offset, offset + iconSize, offset + iconSize),
-                    null
-                )
-            } else {
-                moduleLog("skip mono draw: ${it.message}")
-                return null
-            }
-        }
-
-        val result = circleMasked(bitmap)
-        moduleLog("theme source pkg=$pkg: " + when {
-            hasNativeMono -> "apk-native"
-            legacyBitmap != null -> "oos15"
-            pixelBitmap != null -> "pixel"
-            else -> "generated"
-        })
-        return result
+            val canvas = Canvas(bitmap)
+            canvas.drawColor(bgColor)
+            // ALPHA_8 uses Paint.color as the foreground; no luminance conversion.
+            canvas.drawBitmap(alpha, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = iconColor
+            })
+            return circleMasked(bitmap)
         } finally {
             bitmap.recycle()
         }

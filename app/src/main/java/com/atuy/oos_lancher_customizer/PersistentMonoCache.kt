@@ -1,0 +1,114 @@
+package com.atuy.oos_lancher_customizer
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.os.Build
+import android.os.UserHandle
+import android.util.AtomicFile
+import java.io.File
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+
+/** Palette-independent ALPHA_8 cache in the launcher's device-protected storage.
+ * No writes to launcher SQLite or shared BitmapInfo: stock icon consumers stay unchanged.
+ */
+internal class PersistentMonoCache {
+    companion object {
+        const val SIZE = 192
+        private const val SCHEMA = "mono-v1"
+        private const val MAX_FILES = 384
+        private val ROOTS = listOf("/data/oplus/uxicons",
+            "/my_product/media/theme/uxicons", "/my_stock/media/theme/uxicons",
+            "/my_region/media/theme/uxicons", "/my_carrier/media/theme/uxicons")
+        private val DENSITIES = listOf("", "ldpi", "mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi")
+        private val writer = ThreadPoolExecutor(1, 1, 30L, TimeUnit.SECONDS,
+            ArrayBlockingQueue(32), { r -> Thread(r, "OOS-MonoCache").apply { isDaemon = true } },
+            ThreadPoolExecutor.DiscardPolicy()).apply { allowCoreThreadTimeOut(true) }
+
+        internal fun pack(bitmap: Bitmap): ByteArray {
+            require(bitmap.config == Bitmap.Config.ALPHA_8 && bitmap.width == SIZE && bitmap.height == SIZE)
+            val stride = bitmap.rowBytes
+            val padded = ByteArray(stride * SIZE)
+            bitmap.copyPixelsToBuffer(ByteBuffer.wrap(padded))
+            return ByteArray(SIZE * SIZE).also { packed ->
+                for (y in 0 until SIZE) padded.copyInto(packed, y * SIZE, y * stride, y * stride + SIZE)
+            }
+        }
+
+        internal fun unpack(bytes: ByteArray): Bitmap? {
+            if (bytes.size != SIZE * SIZE) return null
+            val bitmap = Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ALPHA_8)
+            val stride = bitmap.rowBytes
+            val padded = ByteArray(stride * SIZE)
+            for (y in 0 until SIZE) bytes.copyInto(padded, y * stride, y * SIZE, (y + 1) * SIZE)
+            bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(padded))
+            return bitmap
+        }
+    }
+
+    private fun directory(context: Context) =
+        File(context.createDeviceProtectedStorageContext().cacheDir, "oos-customizer-mono-v1")
+
+    fun key(context: Context, component: ComponentName, user: UserHandle): String? = runCatching {
+        val pm = context.packageManager
+        val flags = PackageManager.PackageInfoFlags.of(
+            PackageManager.MATCH_DIRECT_BOOT_AWARE.toLong() or PackageManager.MATCH_DIRECT_BOOT_UNAWARE.toLong())
+        val app = pm.getPackageInfo(component.packageName, flags)
+        val launcher = pm.getPackageInfo("com.android.launcher", flags)
+        val module = pm.getPackageInfo("com.atuy.oos_lancher_customizer", flags)
+        val signature = buildString {
+            append(SCHEMA).append('|').append(Build.FINGERPRINT)
+            append('|').append(component.flattenToString()).append('|').append(user)
+            append('|').append(app.longVersionCode).append('|').append(app.lastUpdateTime)
+            append('|').append(launcher.longVersionCode).append('|').append(launcher.lastUpdateTime)
+            append('|').append(module.longVersionCode).append('|').append(module.lastUpdateTime)
+            append('|').append(context.resources.displayMetrics.densityDpi)
+            append('|').append(context.resources.configuration.locales.toLanguageTags())
+            for (root in ROOTS) for (density in DENSITIES) {
+                val dir = File(if (density.isEmpty()) root else "$root/$density", component.packageName)
+                // Include every mono variant, including Activity-prefixed files.
+                append('|').append(dir.path).append(':').append(dir.lastModified())
+                dir.listFiles()?.filter { it.name.endsWith("monochrome.png") }
+                    ?.sortedBy { it.name }?.forEach {
+                        append('|').append(it.name).append(':').append(it.length()).append(':').append(it.lastModified())
+                    }
+            }
+        }
+        MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+    }.getOrNull()
+
+    fun read(context: Context, key: String): Bitmap? = runCatching {
+        val file = File(directory(context), "$key.alpha")
+        if (!file.isFile || file.length() != (SIZE * SIZE).toLong()) return null
+        unpack(AtomicFile(file).readFully())
+    }.getOrNull()
+
+    fun write(context: Context, key: String, bitmap: Bitmap) {
+        val dir = runCatching { directory(context) }.getOrNull() ?: return
+        val bytes = runCatching { pack(bitmap) }.getOrNull() ?: return
+        writer.execute {
+            runCatching {
+                if (!dir.isDirectory && !dir.mkdirs()) return@runCatching
+                val file = AtomicFile(File(dir, "$key.alpha"))
+                val output = file.startWrite()
+                try {
+                    output.write(bytes)
+                    file.finishWrite(output)
+                } catch (error: Throwable) {
+                    file.failWrite(output)
+                    throw error
+                }
+                val files = dir.listFiles { f -> f.name.endsWith(".alpha") }.orEmpty()
+                if (files.size > MAX_FILES) {
+                    files.sortedBy { it.lastModified() }.take(files.size - MAX_FILES).forEach { it.delete() }
+                }
+            }
+        }
+    }
+}
