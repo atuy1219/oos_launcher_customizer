@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.UserHandle
+import android.os.UserManager
 import android.util.AtomicFile
 import java.io.File
 import java.nio.ByteBuffer
@@ -55,6 +56,8 @@ internal class PersistentMonoCache {
         File(context.createDeviceProtectedStorageContext().cacheDir, "oos-customizer-mono-v1")
 
     fun key(context: Context, component: ComponentName, user: UserHandle): String? = runCatching {
+        if (context.getSystemService(UserManager::class.java)?.isUserUnlocked != true &&
+            !File("/data/oplus/uxicons").canRead()) return null
         val pm = context.packageManager
         val flags = PackageManager.PackageInfoFlags.of(
             PackageManager.MATCH_DIRECT_BOOT_AWARE.toLong() or PackageManager.MATCH_DIRECT_BOOT_UNAWARE.toLong())
@@ -68,12 +71,17 @@ internal class PersistentMonoCache {
             append('|').append(launcher.longVersionCode).append('|').append(launcher.lastUpdateTime)
             append('|').append(module.longVersionCode).append('|').append(module.lastUpdateTime)
             append('|').append(context.resources.displayMetrics.densityDpi)
-            append('|').append(context.resources.configuration.locales.toLanguageTags())
+            val config = context.resources.configuration
+            append('|').append(config.locales.toLanguageTags())
+            append('|').append(config.uiMode).append('|').append(config.orientation)
+            append('|').append(config.screenLayout).append('|').append(config.colorMode)
+            append('|').append(config.screenWidthDp).append('|').append(config.screenHeightDp)
+            append('|').append(config.mcc).append('|').append(config.mnc)
             for (root in ROOTS) for (density in DENSITIES) {
                 val dir = File(if (density.isEmpty()) root else "$root/$density", component.packageName)
                 // Include every mono variant, including Activity-prefixed files.
                 append('|').append(dir.path).append(':').append(dir.lastModified())
-                dir.listFiles()?.filter { it.name.endsWith("monochrome.png") }
+                dir.listFiles()?.filter { it.name.contains("monochrome") && it.name.endsWith(".png") }
                     ?.sortedBy { it.name }?.forEach {
                         append('|').append(it.name).append(':').append(it.length()).append(':').append(it.lastModified())
                     }

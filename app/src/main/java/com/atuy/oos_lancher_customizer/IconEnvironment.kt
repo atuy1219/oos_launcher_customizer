@@ -8,10 +8,12 @@ import android.content.IntentFilter
 import android.content.pm.LauncherApps
 import android.content.pm.ShortcutInfo
 import android.content.res.Configuration
+import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
 import android.os.UserHandle
 import android.util.Log
+import java.io.File
 
 /** One observer set for the launcher process; bursts share one UI refresh. */
 internal class IconEnvironment(
@@ -26,6 +28,32 @@ internal class IconEnvironment(
     private val retryDelays = longArrayOf(0L, 100L, 500L, 2000L)
     private var retryAttempts = 0
     private var retryScheduled = false
+    private val uxRoot = File("/data/oplus/uxicons")
+    private var uxObserver: FileObserver? = null
+    private val uxChanged = Runnable {
+        watchUxIcons()
+        changed(true)
+    }
+
+    private fun watchUxIcons() {
+        uxObserver?.stopWatching()
+        uxObserver = null
+        if (!uxRoot.isDirectory || !uxRoot.canRead()) return
+        runCatching {
+            val paths = listOf(uxRoot) + uxRoot.listFiles()?.filter { it.isDirectory }.orEmpty()
+            val mask = FileObserver.CLOSE_WRITE or FileObserver.CREATE or FileObserver.DELETE or
+                FileObserver.MOVED_TO or FileObserver.MOVED_FROM or FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
+            uxObserver = object : FileObserver(paths, mask) {
+                override fun onEvent(event: Int, path: String?) {
+                    // Coalesce multi-file downloads, and re-arm for new package dirs.
+                    if (path != null && path.contains('.') && path.endsWith(".png") &&
+                        !path.contains("monochrome")) return
+                    handler.removeCallbacks(uxChanged)
+                    handler.postDelayed(uxChanged, 250L)
+                }
+            }.also { it.startWatching() }
+        }.onFailure { Log.w("OOS_IconEnvironment", "UXIcon observer unavailable", it) }
+    }
     private val retryTask = Runnable {
         retryScheduled = false
         retry()
@@ -56,6 +84,13 @@ internal class IconEnvironment(
     }
 
     private fun onUserUnlocked() {
+        val hadObserver = uxObserver != null
+        watchUxIcons()
+        if (!hadObserver && uxObserver != null) {
+            // The source directory has become visible for the first time.
+            changed(true)
+            return
+        }
         // Do not discard successful APK-based renders just because CE storage
         // became available. If the palette changed, perform the normal refresh.
         if (appearance() != current) {
@@ -104,6 +139,7 @@ internal class IconEnvironment(
     }
 
     init {
+        watchUxIcons()
         context.registerComponentCallbacks(configuration)
         runCatching {
             context.registerReceiver(wallpaper, IntentFilter(Intent.ACTION_WALLPAPER_CHANGED), Context.RECEIVER_NOT_EXPORTED)

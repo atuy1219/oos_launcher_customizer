@@ -3,6 +3,8 @@ package com.atuy.oos_lancher_customizer
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.drawable.Drawable
+import android.os.UserManager
+import java.io.File
 import android.util.Log
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -25,8 +27,15 @@ internal class OplusMonochromeSource {
     fun load(context: Context, component: ComponentName): Result {
         val method = loader ?: return Result(null, false)
         return runCatching {
-            // The native mono strategy passes an empty suffix for the 1x1 fallback.
-            val drawable = method.invoke(null, context, component, "") as? Drawable
+            // A source directory inaccessible during Direct Boot is not proof
+            // that an OEM glyph is absent. Do not synthesize prematurely.
+            val unlocked = context.getSystemService(UserManager::class.java)?.isUserUnlocked == true
+            if (!unlocked && !File("/data/oplus/uxicons").canRead()) {
+                return Result(null, true)
+            }
+            // Same two calls as MorphIcon_Mono: explicit dimensions, then 1x1.
+            val drawable = (method.invoke(null, context, component, "_1x1") as? Drawable)
+                ?: (method.invoke(null, context, component, "") as? Drawable)
             Result(drawable?.constantState?.newDrawable(context.resources)?.mutate() ?: drawable, false)
         }.getOrElse {
             Log.w("OOS_LiveMono", "Deferred OEM icon: $component", it)
