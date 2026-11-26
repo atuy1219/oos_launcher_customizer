@@ -26,6 +26,8 @@ internal class IconBitmapCache(maxBytes: Int = 16 * 1024 * 1024) {
                     return result
                 }
             }
+            // Obsolete render was never published to a view or cache.
+            result?.recycle()
         }
         return null
     }

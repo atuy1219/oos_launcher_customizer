@@ -67,7 +67,8 @@ internal class IconEnvironment(
         override fun onConfigurationChanged(newConfig: Configuration) { changed() }
         override fun onLowMemory() { trim() }
         override fun onTrimMemory(level: Int) {
-            if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) trim()
+            // UI_HIDDEN is a routine transition; trim only on actual background pressure.
+            if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) trim()
         }
     }
     private val wallpaper = object : BroadcastReceiver() {

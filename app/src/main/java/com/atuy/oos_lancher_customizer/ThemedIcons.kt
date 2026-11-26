@@ -292,11 +292,11 @@ class ThemedIcons : XposedModule() {
 
         val context = view.context.applicationContext ?: view.context
         prepare(context)
-        val originalBinding = binding(folders, view, info, source)
         if (ThemedIconPolicy.isThemedDrawable(source)) {
             ThemedIconPolicy.rememberDrawable(source, info)
             return source
         }
+        val originalBinding = binding(folders, view, info, source)
         val key = ThemedIconPolicy.itemKey(info)
         val cached = bigFolderViewCache[view]
         val reused = cached?.themed?.get()
@@ -667,6 +667,7 @@ class ThemedIcons : XposedModule() {
 
         val size = 192
         val bitmap = createBitmap(size, size)
+        try {
         val canvas = Canvas(bitmap)
 
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = bgColor }
@@ -719,6 +720,9 @@ class ThemedIcons : XposedModule() {
             else -> "generated"
         })
         return result
+        } finally {
+            bitmap.recycle()
+        }
     }
 
 }
