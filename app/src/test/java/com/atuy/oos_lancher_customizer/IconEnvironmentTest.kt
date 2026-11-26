@@ -39,6 +39,19 @@ class IconEnvironmentTest {
         assertEquals(2, trims)
     }
 
+    @Test fun transientSourceRetriesAreCoalescedAndBounded() {
+        val app: Application = RuntimeEnvironment.getApplication()
+        var retries = 0
+        lateinit var environment: IconEnvironment
+        environment = IconEnvironment(app, {}, {}, {}, retry = {
+            retries++
+            environment.requestSourceRetry()
+        })
+        repeat(20) { environment.requestSourceRetry() }
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(20))
+        assertEquals(4, retries)
+    }
+
     @Test fun wallpaperBroadcastWithUnchangedPaletteDoesNotReloadIcons() {
         val app: Application = RuntimeEnvironment.getApplication()
         var changes = 0

@@ -47,10 +47,12 @@ internal object Oos15MonochromeAssets {
     private fun assetKey(pkg: String, file: String) = "$pkg/$file"
 
     fun hasArtwork(context: Context, pkg: String): Boolean =
-        getAssets(context).containsKey(assetKey(pkg, MAIN_GLYPH))
+        getAssets(context)?.containsKey(assetKey(pkg, MAIN_GLYPH)) == true
+
+    fun isReady(context: Context): Boolean = getAssets(context) != null
 
     fun load(context: Context, pkg: String, component: ComponentName?): Bitmap? {
-        val assets = getAssets(context)
+        val assets = getAssets(context) ?: return null
         val defaultKey = assetKey(pkg, MAIN_GLYPH)
         if (!assets.containsKey(defaultKey)) return null
         val dialerKey = assetKey(pkg, DIALER_GLYPH)
@@ -72,7 +74,7 @@ internal object Oos15MonochromeAssets {
     }
 
     @Synchronized
-    private fun getAssets(context: Context): Map<String, ByteArray> {
+    private fun getAssets(context: Context): Map<String, ByteArray>? {
         bytesByPackage?.let { return it }
         val result = HashMap<String, Pair<Int, ByteArray>>()
         try {
@@ -83,8 +85,10 @@ internal object Oos15MonochromeAssets {
                 readBundle(stream, result)
             }
         } catch (t: Exception) {
-            Log.e(TAG, "Cannot access bundled OOS15 PNGs; using original renderer", t)
+            Log.e(TAG, "Cannot access bundled OOS15 PNGs; deferring fallback", t)
+            return null
         }
+        if (result.isEmpty()) return null
         val assets = result.mapValues { it.value.second }
         bytesByPackage = assets
         Log.i(TAG, "Loaded OOS15 monochrome bundle: ${assets.keys.count { it.endsWith("/monochrome.png") }} packages")

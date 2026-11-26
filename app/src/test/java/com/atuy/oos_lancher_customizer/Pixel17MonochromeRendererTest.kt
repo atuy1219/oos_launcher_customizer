@@ -145,6 +145,12 @@ class Pixel17MonochromeRendererTest {
         record("theme-background-adaptive", themed)
     }
 
+    @Test(expected = IllegalStateException::class)
+    fun aMissingNativeLayerCannotSilentlyBecomeGeneratedArtwork() {
+        val icon = AdaptiveIconDrawable(ColorDrawable(Color.RED), Glyph(color = Color.BLUE))
+        Pixel17MonochromeRenderer.render(icon, side, resources, requireNative = true)
+    }
+
     @Test
     fun nativeMonochromeRemainsUnchangedWhenGeneratedMarginsAreAligned() {
         val icon = AdaptiveIconDrawable(ColorDrawable(Color.RED), Glyph(color = Color.BLUE),

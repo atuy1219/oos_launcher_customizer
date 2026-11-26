@@ -31,6 +31,12 @@ internal class IconBitmapCache(maxBytes: Int = 16 * 1024 * 1024) {
     }
 
     @Synchronized
+    fun clearFailures() {
+        generation++
+        failures.evictAll()
+    }
+
+    @Synchronized
     fun clear() {
         generation++
         bitmaps.evictAll()

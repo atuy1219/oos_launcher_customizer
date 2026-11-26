@@ -18,10 +18,27 @@ internal class IconEnvironment(
     private val context: Context,
     private val invalidate: () -> Unit,
     private val refresh: () -> Unit,
-    private val trim: () -> Unit
+    private val trim: () -> Unit,
+    private val retry: () -> Unit = refresh
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var scheduled = false
+    private val retryDelays = longArrayOf(500L, 1500L, 3000L, 6000L)
+    private var retryAttempts = 0
+    private var retryScheduled = false
+    private val retryTask = Runnable {
+        retryScheduled = false
+        retry()
+    }
+
+    fun requestSourceRetry() {
+        handler.post {
+            if (!retryScheduled && retryAttempts < retryDelays.size) {
+                retryScheduled = true
+                handler.postDelayed(retryTask, retryDelays[retryAttempts++])
+            }
+        }
+    }
     private data class Appearance(val config: Configuration, val background: Int, val foreground: Int)
     private fun appearance(): Appearance {
         val config = context.resources.configuration
@@ -36,6 +53,9 @@ internal class IconEnvironment(
         val next = appearance()
         if (!force && next == current) return
         current = next
+        handler.removeCallbacks(retryTask)
+        retryScheduled = false
+        retryAttempts = 0
         invalidate()
         if (!scheduled) {
             scheduled = true
@@ -53,6 +73,11 @@ internal class IconEnvironment(
     private val wallpaper = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) { changed() }
     }
+    private val unlocked = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_USER_UNLOCKED) changed(true)
+        }
+    }
     private val packages = object : LauncherApps.Callback() {
         override fun onPackageRemoved(packageName: String, user: UserHandle) { changed(true) }
         override fun onPackageAdded(packageName: String, user: UserHandle) { changed(true) }
@@ -67,6 +92,9 @@ internal class IconEnvironment(
         runCatching {
             context.registerReceiver(wallpaper, IntentFilter(Intent.ACTION_WALLPAPER_CHANGED), Context.RECEIVER_NOT_EXPORTED)
         }.onFailure { Log.w("OOS_IconEnvironment", "Wallpaper observer unavailable", it) }
+        runCatching {
+            context.registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_UNLOCKED), Context.RECEIVER_NOT_EXPORTED)
+        }.onFailure { Log.w("OOS_IconEnvironment", "Unlock observer unavailable", it) }
         runCatching {
             context.getSystemService(LauncherApps::class.java)?.registerCallback(packages, handler)
         }.onFailure { Log.w("OOS_IconEnvironment", "Package observer unavailable", it) }

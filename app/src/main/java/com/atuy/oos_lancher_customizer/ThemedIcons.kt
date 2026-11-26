@@ -2,6 +2,7 @@ package com.atuy.oos_lancher_customizer
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -16,6 +17,7 @@ import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.UserHandle
+import android.os.UserManager
 import android.util.Log
 import android.view.View
 import androidx.core.graphics.createBitmap
@@ -71,7 +73,8 @@ class ThemedIcons : XposedModule() {
                     ThemedIconPolicy.invalidateTheme()
                 },
                 refresh = ::refreshVisibleIcons,
-                trim = { iconCache.clear(); ThemedIconPolicy.trimSnapshots() }
+                trim = { iconCache.clear(); ThemedIconPolicy.trimSnapshots() },
+                retry = { iconCache.clearFailures(); refreshVisibleIcons() }
             )
         }
     }
@@ -442,14 +445,14 @@ class ThemedIcons : XposedModule() {
             ?.takeIf { it.contains('.') }
             ?.let { return it }
 
-        return null
+        return resolveComponentName(itemInfo)?.packageName
     }
 
     private fun resolveComponentName(itemInfo: Any): ComponentName? {
         (readField(itemInfo, "componentName") as? ComponentName)?.let { return it }
         (invokeNoArg(itemInfo, "getTargetComponent") as? ComponentName)?.let { return it }
         (invokeNoArg(itemInfo, "getMTargetComponent") as? ComponentName)?.let { return it }
-        return null
+        return ((invokeNoArg(itemInfo, "getIntent") ?: readField(itemInfo, "intent")) as? Intent)?.component
     }
 
     private fun resolveUserHandle(itemInfo: Any): UserHandle? {
@@ -462,27 +465,24 @@ class ThemedIcons : XposedModule() {
         user: UserHandle
     ): Drawable? {
         return runCatching {
-            val launcherApps =
-                context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
-            val activityInfo =
-                launcherApps.getActivityList(component.packageName, user).firstOrNull {
-                    it.componentName == component
-                }
-            // Read the manifest resource directly. OEM LauncherActivityInfo#getIcon
-            // may return a pre-scaled/themed adaptive wrapper instead of the APK icon.
-            val manifest = context.packageManager.getActivityInfo(
-                component, PackageManager.ComponentInfoFlags.of(0)
-            )
-            val res = context.packageManager.getResourcesForApplication(
-                activityInfo?.applicationInfo ?: manifest.applicationInfo
-            )
-            val raw = res.getDrawableForDensity(
+            val pm = context.packageManager
+            val manifest = pm.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(0))
+            val appInfo = if (user == android.os.Process.myUserHandle()) {
+                manifest.applicationInfo
+            } else {
+                val apps = context.getSystemService(LauncherApps::class.java)
+                apps?.getActivityList(component.packageName, user)
+                    ?.firstOrNull { it.componentName == component }?.applicationInfo
+                    ?: return@runCatching null
+            }
+            val res = pm.getResourcesForApplication(appInfo)
+            // Never substitute an OEM-normalized icon or default activity icon.
+            res.getDrawableForDensity(
                 manifest.iconResource, context.resources.displayMetrics.densityDpi, null
-            ) ?: return@runCatching null
-            raw
+            )
         }.getOrElse { error ->
             moduleLog("raw resource unavailable pkg=${component.packageName}: ${error.javaClass.simpleName}")
-            runCatching { context.packageManager.getActivityIcon(component) }.getOrNull()
+            null
         }
     }
 
@@ -490,7 +490,7 @@ class ThemedIcons : XposedModule() {
         context: Context,
         itemInfo: Any,
         fallback: Drawable
-    ): Drawable {
+    ): Drawable? {
         val itemType = resolveItemType(itemInfo)
         if (isShortcutLikeItem(itemInfo)) {
             val id = (invokeNoArg(itemInfo, "getDeepShortcutId") as? String)
@@ -509,14 +509,15 @@ class ThemedIcons : XposedModule() {
                     info?.let { apps.getShortcutIconDrawable(it,
                         context.resources.displayMetrics.densityDpi) }
                 }.getOrNull()
-                if (raw != null) return raw
+                return raw
             }
-            return fallback
+            // A custom legacy shortcut can have its own launcher-owned artwork.
+            return if (id.isNullOrEmpty()) fallback else null
         }
         if (itemType != 0) return fallback
-        val component = resolveComponentName(itemInfo) ?: return fallback
+        val component = resolveComponentName(itemInfo) ?: return null
         val user = resolveUserHandle(itemInfo) ?: android.os.Process.myUserHandle()
-        return loadOriginalIcon(context, component, user) ?: fallback
+        return loadOriginalIcon(context, component, user)
     }
 
     private fun resolveItemType(itemInfo: Any): Int? {
@@ -550,6 +551,12 @@ class ThemedIcons : XposedModule() {
         context: Context, pkg: String, fallback: Drawable, item: Any,
         originalBinding: Binding? = null
     ): Drawable? {
+        // Before credential unlock the launcher may bind placeholders or cached
+        // flattened icons. Preserve those until authoritative resources are available.
+        val unlocked = runCatching {
+            context.getSystemService(UserManager::class.java)?.isUserUnlocked == true
+        }.getOrDefault(false)
+        if (!unlocked) return null
         val component = resolveComponentName(item)
         val user = resolveUserHandle(item) ?: android.os.Process.myUserHandle()
         val shortcutId = (invokeNoArg(item, "getDeepShortcutId") as? String)
@@ -567,12 +574,12 @@ class ThemedIcons : XposedModule() {
                 originalBinding?.restore(context) ?: fallback
             } else fallback
             val source = resolveBestSourceDrawable(context, item, unthemed)
-            // If the original source has disappeared, retain the launcher's
-            // drawable instead of converting an old themed bitmap a second time.
-            if (ThemedIconPolicy.isKnownThemedDrawable(source)) null else {
-                generateRawThemedBitmap(context, pkg, source,
-                    isShortcutLikeItem(item), resolveComponentName(item))
+            if (source == null || ThemedIconPolicy.isKnownThemedDrawable(source)) {
+                environment?.requestSourceRetry()
+                return@getOrLoad null
             }
+            generateRawThemedBitmap(context, pkg, source,
+                isShortcutLikeItem(item), component)
         } ?: return null
         return bitmap.toDrawable(context.resources)
     }
@@ -614,8 +621,14 @@ class ThemedIcons : XposedModule() {
         isShortcut: Boolean,
         component: ComponentName?
     ): Bitmap? {
-        val legacyBitmap = if (!isShortcut) Oos15MonochromeAssets.load(context, pkg, component) else null
         val hasNativeMono = (original as? AdaptiveIconDrawable)?.monochrome != null
+        if (!isShortcut && !hasNativeMono && !Oos15MonochromeAssets.isReady(context)) {
+            environment?.requestSourceRetry()
+            return null
+        }
+        val legacyBitmap = if (!isShortcut && !hasNativeMono) {
+            Oos15MonochromeAssets.load(context, pkg, component)
+        } else null
         val pixelBitmap = if (!isShortcut && legacyBitmap == null && !hasNativeMono) {
             PixelLauncherThemedAssets.load(pkg)
         } else null
@@ -635,9 +648,11 @@ class ThemedIcons : XposedModule() {
             else -> {
                 val alpha = runCatching {
                     Pixel17MonochromeRenderer.render(
-                        original, 192, context.resources, matchThemeBackground = true
+                        original, 192, context.resources, matchThemeBackground = true,
+                        requireNative = hasNativeMono
                     )
                 }.recoverCatching {
+                    if (hasNativeMono) throw it
                     val software = extractSoftwareBitmap(original) ?: throw it
                     Pixel17MonochromeRenderer.render(
                         BitmapDrawable(context.resources, software), 192, context.resources,
@@ -696,7 +711,14 @@ class ThemedIcons : XposedModule() {
             }
         }
 
-        return circleMasked(bitmap)
+        val result = circleMasked(bitmap)
+        moduleLog("theme source pkg=$pkg: " + when {
+            hasNativeMono -> "apk-native"
+            legacyBitmap != null -> "oos15"
+            pixelBitmap != null -> "pixel"
+            else -> "generated"
+        })
+        return result
     }
 
 }
