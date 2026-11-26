@@ -297,8 +297,23 @@ class ThemedIcons : XposedModule() {
                     if (arg !is ArrayList<*>) continue
                     for (params in arg.toList()) {
                         if (params == null) continue
-                        val item = readField(params, "item") ?: continue
                         val drawable = readField(params, "drawable") as? Drawable ?: continue
+                        if (ThemedIconPolicy.isCompositeFolderObject(params) ||
+                            ThemedIconPolicy.isCompositeFolderObject(drawable)) {
+                            val children = invokeNoArg(params, "getCurrentStackedParams") as? Iterable<*>
+                            children?.forEach { child ->
+                                if (child != null) {
+                                    val childItem = readField(child, "item")
+                                    val childDrawable = readField(child, "drawable") as? Drawable
+                                    if (childItem != null && childDrawable != null &&
+                                        !ThemedIconPolicy.isThemedDrawable(childDrawable)) {
+                                        afterPreviewSetDrawable(owner, arrayOf(child, childItem))
+                                    }
+                                }
+                            }
+                            continue
+                        }
+                        val item = readField(params, "item") ?: continue
                         if (ThemedIconPolicy.isThemedDrawable(drawable)) continue
                         afterPreviewSetDrawable(owner, arrayOf(params, item))
                     }
@@ -383,6 +398,7 @@ class ThemedIcons : XposedModule() {
     private fun themedBigFolderDrawable(owner: Any?, original: Drawable?): Drawable? {
         val view = owner as? View ?: return null
         val source = original ?: return null
+        if (ThemedIconPolicy.isCompositeFolderObject(source)) return null
         val info = ThemedIconPolicy.itemForView(view) ?: return null
         if (!ThemedIconPolicy.shouldThemeView(view, info)) return null
         val pkg = resolvePackageName(info) ?: return null
@@ -432,6 +448,26 @@ class ThemedIcons : XposedModule() {
         if (!shouldApplyToPackage(pkg)) return
 
         val drawable = readField(previewParams, "drawable") as? Drawable
+        if (ThemedIconPolicy.isCompositeFolderObject(previewParams) ||
+            ThemedIconPolicy.isCompositeFolderObject(drawable)) {
+            // Keep the native StackedDrawable and its layout/animation. Only
+            // its leaf params are eligible for monochrome replacement.
+            previews.remove(previewParams)
+            clearPreviewPending(owner, previewParams)
+            val children = invokeNoArg(previewParams, "getCurrentStackedParams") as? Iterable<*>
+            children?.forEach { child ->
+                if (child != null && child !== previewParams) {
+                    val childItem = readField(child, "item")
+                    if (childItem != null) afterPreviewSetDrawable(owner, arrayOf(child, childItem))
+                }
+            }
+            return
+        }
+        if (drawable != null && drawable === readField(owner, "mHolderDrawable")) {
+            previews.remove(previewParams)
+            clearPreviewPending(owner, previewParams)
+            return
+        }
         val key = ThemedIconPolicy.itemKey(itemInfo)
         val previous = previews[previewParams]?.source
         val original = when {
@@ -777,24 +813,27 @@ class ThemedIcons : XposedModule() {
         diskKey: String?
     ): Bitmap? {
         val hasNativeMono = (original as? AdaptiveIconDrawable)?.monochrome != null
-        val oplus = if (!isShortcut && !hasNativeMono && component != null) {
+        // Keep the established home-screen artwork for packages with a known
+        // compatibility glyph. A live OEM asset may be a different design,
+        // not just a higher-resolution version of that glyph.
+        if (!isShortcut && !hasNativeMono && !Oos15MonochromeAssets.isReady(context)) {
+            environment?.requestSourceRetry()
+            return null
+        }
+        val legacy = if (!isShortcut && !hasNativeMono) {
+            Oos15MonochromeAssets.load(context, pkg, component)
+        } else null
+        val pixel = if (!isShortcut && !hasNativeMono && legacy == null) {
+            PixelLauncherThemedAssets.load(pkg)
+        } else null
+        val oplus = if (!isShortcut && !hasNativeMono && legacy == null && pixel == null &&
+            component != null) {
             oplusSource.load(context, component)
         } else OplusMonochromeSource.Result(null, false)
         if (oplus.retry) {
             environment?.requestSourceRetry()
             return null
         }
-        if (!isShortcut && !hasNativeMono && oplus.drawable == null &&
-            !Oos15MonochromeAssets.isReady(context)) {
-            environment?.requestSourceRetry()
-            return null
-        }
-        val legacy = if (!isShortcut && !hasNativeMono && oplus.drawable == null) {
-            Oos15MonochromeAssets.load(context, pkg, component)
-        } else null
-        val pixel = if (!isShortcut && !hasNativeMono && oplus.drawable == null && legacy == null) {
-            PixelLauncherThemedAssets.load(pkg)
-        } else null
         val sourceName = when {
             hasNativeMono -> "apk-native"
             oplus.drawable != null -> "oplus-live"
@@ -804,7 +843,7 @@ class ThemedIcons : XposedModule() {
         }
         val alpha = runCatching {
             when {
-                oplus.drawable != null -> rasterizeGlyph(context, oplus.drawable, 1f)
+                oplus.drawable != null -> rasterizeGlyph(context, oplus.drawable, 1.5f)
                 legacy != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, legacy),
                     Oos15MonochromeAssets.GLYPH_SCALE)
                 pixel != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, pixel),

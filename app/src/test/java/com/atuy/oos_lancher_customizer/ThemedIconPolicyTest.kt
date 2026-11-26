@@ -18,6 +18,19 @@ class ThemedIconPolicyTest {
         fun getDeepShortcutId() = shortcut
     }
 
+    @Test fun compositeFolderSlotsAreNeverSingleAppDrawables() {
+        assertTrue(ThemedIconPolicy.isCompositeFolderClass(
+            "com.android.launcher3.folder.big.stacked.StackedDrawable"))
+        assertTrue(ThemedIconPolicy.isCompositeFolderClass(
+            "com.android.launcher3.folder.big.stacked.BFPreviewItemDrawingParams"))
+        assertTrue(ThemedIconPolicy.isCompositeFolderClass(
+            "com.android.launcher3.folder.FolderPreviewDrawable"))
+        assertFalse(ThemedIconPolicy.isCompositeFolderClass(
+            "com.android.launcher3.folder.PreviewItemDrawingParams"))
+        assertFalse(ThemedIconPolicy.isCompositeFolderClass(
+            "android.graphics.drawable.BitmapDrawable"))
+    }
+
     @Test fun normalAppsAndHomeShortcutsCanBeThemed() {
         for (type in listOf(0, 1, 6)) {
             assertTrue(ThemedIconPolicy.shouldThemeItem(Item(itemType = type)))

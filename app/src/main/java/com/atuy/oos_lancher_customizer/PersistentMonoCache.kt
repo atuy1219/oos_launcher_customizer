@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
 internal class PersistentMonoCache {
     companion object {
         const val SIZE = 192
-        private const val SCHEMA = "mono-v1"
+        private const val SCHEMA = "mono-v2-compat-artwork"
         private const val MAX_FILES = 384
         private val ROOTS = listOf("/data/oplus/uxicons",
             "/my_product/media/theme/uxicons", "/my_stock/media/theme/uxicons",
