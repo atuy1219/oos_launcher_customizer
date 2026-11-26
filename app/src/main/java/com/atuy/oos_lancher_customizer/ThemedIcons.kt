@@ -417,11 +417,11 @@ class ThemedIcons : XposedModule() {
 
         val drawable = readField(previewParams, "drawable") as? Drawable
         val key = ThemedIconPolicy.itemKey(itemInfo)
-        val previous = previews[previewParams]
+        val previous = previews[previewParams]?.source
         val original = when {
             drawable == null || ThemedIconPolicy.isKnownThemedDrawable(drawable) ->
-                previous?.source?.takeIf { it.key == key }
-            previous?.source?.key == key && previous.source.original.get() === drawable -> previous.source
+                previous?.takeIf { it.key == key }
+            previous != null && previous.key == key && previous.original.get() === drawable -> previous
             else -> originalBinding(key, drawable, resolveItemType(itemInfo) != 0)
         }
         // Remember the binding before checking folder ownership or context:
