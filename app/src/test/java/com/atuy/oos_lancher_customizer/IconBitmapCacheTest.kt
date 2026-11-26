@@ -34,6 +34,16 @@ class IconBitmapCacheTest {
         assertEquals(4, loads)
     }
 
+    @Test fun transientFailuresCanBeRetriedWithoutEvictingSuccessfulIcons() {
+        val cache = IconBitmapCache()
+        val ready = cache.getOrLoad("ready") { bitmap() }
+        assertNull(cache.getOrLoad("boot") { null })
+        assertNull(cache.getOrLoad("boot") { fail("failure should be throttled"); bitmap() })
+        cache.clearFailures()
+        assertSame(ready, cache.getOrLoad("ready") { fail("must retain success"); null })
+        assertNotNull(cache.getOrLoad("boot") { bitmap() })
+    }
+
     @Test fun lateResultCannotRepopulateAnInvalidatedCache() {
         val cache = IconBitmapCache()
         val obsolete = cache.getOrLoad("app") { cache.clear(); bitmap() }

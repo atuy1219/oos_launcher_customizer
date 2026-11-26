@@ -21,7 +21,8 @@ import kotlin.math.roundToInt
 internal object Pixel17MonochromeRenderer {
     fun render(
         source: Drawable, size: Int, resources: Resources,
-        matchThemeBackground: Boolean = false
+        matchThemeBackground: Boolean = false,
+        requireNative: Boolean = false
     ): Bitmap {
         // Work on a private drawable: AdaptiveIconDrawable updates child bounds.
         val icon = source.constantState?.newDrawable(resources)?.mutate() ?: source
@@ -29,6 +30,7 @@ internal object Pixel17MonochromeRenderer {
         try {
             val extra = AdaptiveIconDrawable.getExtraInsetFraction()
             val native = (icon as? AdaptiveIconDrawable)?.monochrome
+            check(!requireNative || native != null) { "Native monochrome layer unavailable" }
             // Generated monochrome is a temporary ALPHA_8 bitmap, not a cache entry.
             // Never recycle the app-owned native monochrome Drawable.
             val generated = if (native == null) generate(icon, size, resources, extra) else null
