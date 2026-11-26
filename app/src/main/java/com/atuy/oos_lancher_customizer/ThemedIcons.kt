@@ -442,11 +442,6 @@ class ThemedIcons : XposedModule() {
     private fun afterPreviewSetDrawable(owner: Any?, args: Array<Any?>) {
         if (owner == null) return
         val previewParams = args.firstOrNull() ?: return
-        val itemInfo = args.getOrNull(1) ?: return
-        if (!ThemedIconPolicy.shouldThemeItem(itemInfo)) return
-        val pkg = resolvePackageName(itemInfo) ?: return
-        if (!shouldApplyToPackage(pkg)) return
-
         val drawable = readField(previewParams, "drawable") as? Drawable
         if (ThemedIconPolicy.isCompositeFolderObject(previewParams) ||
             ThemedIconPolicy.isCompositeFolderObject(drawable)) {
@@ -468,6 +463,12 @@ class ThemedIcons : XposedModule() {
             clearPreviewPending(owner, previewParams)
             return
         }
+        // A reused param can change its item during layout reconstruction.
+        // Prefer its actual current binding over an old retry entry.
+        val itemInfo = readField(previewParams, "item") ?: args.getOrNull(1) ?: return
+        if (!ThemedIconPolicy.shouldThemeItem(itemInfo)) return
+        val pkg = resolvePackageName(itemInfo) ?: return
+        if (!shouldApplyToPackage(pkg)) return
         val key = ThemedIconPolicy.itemKey(itemInfo)
         val previous = previews[previewParams]?.source
         val original = when {
@@ -726,6 +727,9 @@ class ThemedIcons : XposedModule() {
         context: Context, pkg: String, fallback: Drawable, item: Any,
         originalBinding: Binding? = null
     ): Drawable? {
+        // Never turn a composite overflow slot or cached folder RenderNode
+        // into a single application icon, regardless of the caller.
+        if (ThemedIconPolicy.isCompositeFolderObject(fallback)) return null
         // Ordinary apps use only verified APK resources, which do not require
         // credential unlock. Launcher-owned shortcut artwork is different.
         if (isShortcutLikeItem(item)) {
@@ -843,7 +847,7 @@ class ThemedIcons : XposedModule() {
         }
         val alpha = runCatching {
             when {
-                oplus.drawable != null -> rasterizeGlyph(context, oplus.drawable, 1.5f)
+                oplus.drawable != null -> rasterizeGlyph(context, oplus.drawable, 1f)
                 legacy != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, legacy),
                     Oos15MonochromeAssets.GLYPH_SCALE)
                 pixel != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, pixel),

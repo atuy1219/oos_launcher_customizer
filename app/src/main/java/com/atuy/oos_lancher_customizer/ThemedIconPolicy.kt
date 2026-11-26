@@ -203,7 +203,7 @@ internal object ThemedIconPolicy {
             name == "com.android.launcher3.folder.FolderPreviewDrawable"
 
     fun isCompositeFolderObject(value: Any?): Boolean {
-        var type = value?.javaClass
+        var type: Class<*>? = value?.javaClass
         while (type != null) {
             if (isCompositeFolderClass(type.name)) return true
             type = type.superclass
