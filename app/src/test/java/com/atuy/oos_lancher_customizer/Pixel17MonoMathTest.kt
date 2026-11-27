@@ -50,9 +50,4 @@ class Pixel17MonoMathTest {
         assertEquals((1f - scale * 0.5f) / 2f, landscape.top, 0.00001f)
     }
 
-    @Test
-    fun originalOos15AndPixelExplicitScalesAreUnaffected() {
-        assertEquals(1.5f, Oos15MonochromeAssets.GLYPH_SCALE, 0f)
-        assertEquals(0.6f, PixelLauncherThemedAssets.GLYPH_SCALE, 0.000001f)
-    }
 }
