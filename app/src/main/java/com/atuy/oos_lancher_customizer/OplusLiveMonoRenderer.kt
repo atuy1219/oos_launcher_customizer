@@ -3,8 +3,10 @@ package com.atuy.oos_lancher_customizer
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.InsetDrawable
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -43,10 +45,13 @@ internal object OplusLiveMonoRenderer {
         val g = geometry(width, height, size)
         // Rasterize to ARGB first, as tr.m.o does. Non-game themed artwork is
         // recolored with SRC_IN by tr.m.a0: its shape comes from alpha, not RGB.
+        // OEM masks use adaptive-layer coordinates. Match Launcher3's
+        // ClippedMonoDrawable negative inset before applying our circular mask.
+        val drawable = InsetDrawable(glyph, -AdaptiveIconDrawable.getExtraInsetFraction())
         val flat = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         try {
-            glyph.setBounds(g.left, g.top, g.left + g.width, g.top + g.height)
-            glyph.draw(Canvas(flat))
+            drawable.setBounds(g.left, g.top, g.left + g.width, g.top + g.height)
+            drawable.draw(Canvas(flat))
             val alpha = flat.extractAlpha()
             try {
                 val data = PersistentMonoCache.pack(alpha)
@@ -68,7 +73,7 @@ internal object OplusLiveMonoRenderer {
                     if (a == 0) empty++
                     count++
                 }
-                diagnostic("intrinsic=${width}x$height bitmap=${pixels?.width}x${pixels?.height} bounds=$g alpha=$low..$high solid=$solid empty=$empty visible=$count")
+                diagnostic("intrinsic=${width}x$height bitmap=${pixels?.width}x${pixels?.height} frame=$g glyphBounds=${glyph.bounds} alpha=$low..$high solid=$solid empty=$empty visible=$count")
                 return alpha
             } catch (error: Throwable) {
                 alpha.recycle()
