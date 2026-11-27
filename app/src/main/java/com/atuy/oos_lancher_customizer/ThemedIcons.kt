@@ -49,15 +49,6 @@ class ThemedIcons : XposedModule() {
     private val iconCache = IconBitmapCache()
     private val oplusSource = OplusMonochromeSource()
     private val monoCache = PersistentMonoCache()
-    @Volatile private var scales = IconSourceScales.DEFAULT
-
-    private fun reloadScales(context: Context): Boolean {
-        val next = IconSourceScales.read(context)
-        val changed = next != scales
-        if (changed) scales = next
-        moduleLog("mono scales=${next.cacheToken}")
-        return changed
-    }
     @Volatile private var environment: IconEnvironment? = null
 
     private data class Binding(
@@ -105,11 +96,8 @@ class ThemedIcons : XposedModule() {
     private fun prepare(context: Context) {
         if (environment != null) return
         synchronized(this) {
-            if (environment == null) {
-                val app = context.applicationContext ?: context
-                reloadScales(app)
-                environment = IconEnvironment(
-                app,
+            if (environment == null) environment = IconEnvironment(
+                context.applicationContext ?: context,
                 invalidate = {
                     iconCache.clear()
                     bigFolderViewCache.clear()
@@ -117,10 +105,8 @@ class ThemedIcons : XposedModule() {
                 },
                 refresh = ::refreshVisibleIcons,
                 trim = { iconCache.clear(); ThemedIconPolicy.trimSnapshots() },
-                retry = { iconCache.clearFailures(); refreshVisibleIcons() },
-                onScaleChanged = { reloadScales(app) }
-                )
-            }
+                retry = { iconCache.clearFailures(); refreshVisibleIcons() }
+            )
         }
     }
 
@@ -769,16 +755,15 @@ class ThemedIcons : XposedModule() {
                 "${ThemedIconPolicy.itemKey(item)}|$version"
             }
         }
-        val scale = scales
-        val bitmap = iconCache.getOrLoad("$key|scales=${scale.cacheToken}") {
+        val bitmap = iconCache.getOrLoad(key) {
             val diskKey = if (!isShortcutLikeItem(item) && component != null &&
                 user == android.os.Process.myUserHandle()) {
-                monoCache.key(context, component, user, scale.cacheToken)
+                monoCache.key(context, component, user)
             } else null
             if (diskKey != null) {
                 monoCache.read(context, diskKey)?.let { entry ->
                     try {
-                        moduleLog("theme source pkg=$pkg: ${entry.source} cache=disk scale=${scale.forSource(entry.source).cacheToken} component=$component")
+                        moduleLog("theme source pkg=$pkg: ${entry.source} cache=disk component=$component")
                         return@getOrLoad colorizeMono(context, entry.alpha)
                     } finally {
                         entry.alpha.recycle()
@@ -794,7 +779,7 @@ class ThemedIcons : XposedModule() {
                 return@getOrLoad null
             }
             generateRawThemedBitmap(context, pkg, source,
-                isShortcutLikeItem(item), component, diskKey, scale)
+                isShortcutLikeItem(item), component, diskKey)
         } ?: return null
         return bitmap.toDrawable(context.resources)
     }
@@ -835,8 +820,7 @@ class ThemedIcons : XposedModule() {
         original: Drawable,
         isShortcut: Boolean,
         component: ComponentName?,
-        diskKey: String?,
-        scale: IconSourceScales
+        diskKey: String?
     ): Bitmap? {
         val hasNativeMono = (original as? AdaptiveIconDrawable)?.monochrome != null
         // Keep the established home-screen artwork for packages with a known
@@ -862,7 +846,7 @@ class ThemedIcons : XposedModule() {
         }
         val liveMask = oplus.drawable?.let { glyph ->
             runCatching {
-                OplusLiveMonoRenderer.render(glyph, PersistentMonoCache.SIZE, scale.oplusLive) { detail ->
+                OplusLiveMonoRenderer.render(glyph, PersistentMonoCache.SIZE) { detail ->
                     moduleLog("oplus geometry pkg=$pkg: $detail")
                 }
             }.onFailure {
@@ -882,20 +866,18 @@ class ThemedIcons : XposedModule() {
         val alpha = runCatching {
             when {
                 liveMask != null -> liveMask
-                legacy != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, legacy),
-                    scale.oos15.factor ?: Oos15MonochromeAssets.GLYPH_SCALE)
-                pixel != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, pixel),
-                    scale.pixel.factor ?: PixelLauncherThemedAssets.GLYPH_SCALE)
+                legacy != null -> NativeAssetMonoRenderer.renderOos15(
+                    BitmapDrawable(context.resources, legacy), PersistentMonoCache.SIZE)
+                pixel != null -> NativeAssetMonoRenderer.renderPixel(
+                    BitmapDrawable(context.resources, pixel), PersistentMonoCache.SIZE)
                 else -> runCatching {
                     Pixel17MonochromeRenderer.render(original, PersistentMonoCache.SIZE, context.resources,
-                        matchThemeBackground = true, requireNative = hasNativeMono,
-                        scale = scale.forSource(sourceName).factor ?: 1f)
+                        matchThemeBackground = true, requireNative = hasNativeMono)
                 }.recoverCatching {
                     if (hasNativeMono) throw it
                     val software = extractSoftwareBitmap(original) ?: throw it
                     Pixel17MonochromeRenderer.render(BitmapDrawable(context.resources, software),
-                        PersistentMonoCache.SIZE, context.resources, matchThemeBackground = true,
-                        scale = scale.generated.factor ?: 1f)
+                        PersistentMonoCache.SIZE, context.resources, matchThemeBackground = true)
                 }.getOrThrow()
             }
         }.onFailure {
@@ -906,33 +888,13 @@ class ThemedIcons : XposedModule() {
             val result = colorizeMono(context, alpha)
             // Only persist if the sources still match the key captured before rendering.
             if (diskKey != null && component != null &&
-                scale == scales &&
-                diskKey == monoCache.key(context, component, android.os.Process.myUserHandle(), scale.cacheToken)) {
+                diskKey == monoCache.key(context, component, android.os.Process.myUserHandle())) {
                 monoCache.write(context, diskKey, alpha, sourceName)
             }
-            moduleLog("theme source pkg=$pkg: $sourceName cache=miss scale=${scale.forSource(sourceName).cacheToken} component=$component raw=${original.javaClass.name} shortcut=$isShortcut")
+            moduleLog("theme source pkg=$pkg: $sourceName cache=miss component=$component raw=${original.javaClass.name} shortcut=$isShortcut")
             return result
         } finally {
             alpha.recycle()
-        }
-    }
-
-    private fun rasterizeGlyph(context: Context, source: Drawable, scale: Float): Bitmap {
-        val glyph = source.constantState?.newDrawable(context.resources)?.mutate() ?: source
-        val old = Rect(glyph.bounds)
-        val size = PersistentMonoCache.SIZE
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ALPHA_8)
-        try {
-            val side = (size * scale).roundToInt()
-            val offset = (size - side) / 2
-            glyph.setBounds(offset, offset, offset + side, offset + side)
-            glyph.draw(Canvas(bitmap))
-            return bitmap
-        } catch (error: Throwable) {
-            bitmap.recycle()
-            throw error
-        } finally {
-            glyph.bounds = old
         }
     }
 

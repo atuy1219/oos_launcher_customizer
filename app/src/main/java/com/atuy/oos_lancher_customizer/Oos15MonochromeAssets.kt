@@ -20,13 +20,6 @@ internal object Oos15MonochromeAssets {
     private const val MAIN_GLYPH = "monochrome.png"
     private const val DIALER_GLYPH = "dialer_monochrome.png"
 
-    /**
-     * Apply the same 1.5x foreground canvas scale to every bundled OOS15
-     * monochrome image; leave background circle and fallback paths unchanged.
-     * PNG artwork that approaches an edge may clip at the circular mask.
-     */
-    internal const val GLYPH_SCALE = 1.50f
-
     @Volatile private var bytesByPackage: Map<String, ByteArray>? = null
     private val decoded = object : LruCache<String, Bitmap>(8 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int =

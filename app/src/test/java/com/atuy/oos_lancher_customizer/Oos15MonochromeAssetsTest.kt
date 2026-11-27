@@ -29,9 +29,6 @@ class Oos15MonochromeAssetsTest {
             assertTrue(zip.getEntry("xxxhdpi/com.android.contacts/dialer_monochrome.png") != null)
         }
     }
-    @Test fun allOos15GlyphsUseUniformOnePointFiveScale() {
-        assertEquals(1.50f, Oos15MonochromeAssets.GLYPH_SCALE, 0f)
-    }
     @Test fun distinguishDialerFromContactsComponent() {
         assertTrue(Oos15MonochromeAssets.isDialerActivityName("com.android.contacts.activities.DialtactsActivity"))
         assertFalse(Oos15MonochromeAssets.isDialerActivityName("com.android.contacts.activities.PeopleActivity"))
