@@ -69,7 +69,7 @@ internal class StockMonoPipeline {
                     request.inTheme = true
                     try {
                         val result = chain.proceed()
-                        if (result is Drawable && request.source in EXTERNAL) request.applied = true
+                        if (result is Drawable && request.source?.let { it in EXTERNAL } == true) request.applied = true
                         result
                     } finally {
                         request.inTheme = false
@@ -113,6 +113,7 @@ internal class StockMonoPipeline {
                             matchThemeBackground = true, forceGenerated = true)
                         try {
                             val bitmap = Bitmap.createBitmap(alpha.width, alpha.height, Bitmap.Config.ARGB_8888)
+                            bitmap.density = request.context.resources.displayMetrics.densityDpi
                             Canvas(bitmap).drawBitmap(alpha, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
                                 color = chain.args[1] as Int
                             })
@@ -163,6 +164,11 @@ internal class StockMonoPipeline {
                     }
                 }
                 "oplus-live" -> {
+                    val unlocked = request.context.getSystemService(android.os.UserManager::class.java)?.isUserUnlocked == true
+                    if (!unlocked && !java.io.File("/data/oplus/uxicons").canRead()) {
+                        request.deferred = true
+                        return null
+                    }
                     val asset = chain.proceed()
                     if (asset is Drawable) {
                         request.source = source

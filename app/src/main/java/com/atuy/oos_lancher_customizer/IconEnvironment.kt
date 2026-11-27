@@ -140,7 +140,10 @@ internal class IconEnvironment(
 
     private val priorityObserver = object : android.database.ContentObserver(handler) {
         override fun onChange(selfChange: Boolean) {
-            sourceOrderChanged(MonoSourceOrder.parse(android.provider.Settings.Global.getString(context.contentResolver, MonoSourceOrder.KEY)))
+            val order = runCatching {
+                android.provider.Settings.Global.getString(context.contentResolver, MonoSourceOrder.KEY)
+            }.getOrNull()
+            sourceOrderChanged(MonoSourceOrder.parse(order))
             changed(true)
         }
     }

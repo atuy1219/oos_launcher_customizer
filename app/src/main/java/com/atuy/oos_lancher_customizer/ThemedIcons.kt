@@ -99,19 +99,21 @@ class ThemedIcons : XposedModule() {
         if (environment != null) return
         synchronized(this) {
             if (environment == null) {
-                sourceOrder = MonoSourceOrder.parse(android.provider.Settings.Global.getString(context.contentResolver, MonoSourceOrder.KEY))
+                sourceOrder = MonoSourceOrder.parse(runCatching {
+                    android.provider.Settings.Global.getString(context.contentResolver, MonoSourceOrder.KEY)
+                }.getOrNull())
                 environment = IconEnvironment(
-                context.applicationContext ?: context,
-                invalidate = {
-                    iconCache.clear()
-                    bigFolderViewCache.clear()
-                    ThemedIconPolicy.invalidateTheme()
-                },
-                refresh = ::refreshVisibleIcons,
-                trim = { iconCache.clear(); ThemedIconPolicy.trimSnapshots() },
-                retry = { iconCache.clearFailures(); refreshVisibleIcons() },
-                sourceOrderChanged = { sourceOrder = it }
-            )
+                    context.applicationContext ?: context,
+                    invalidate = {
+                        iconCache.clear()
+                        bigFolderViewCache.clear()
+                        ThemedIconPolicy.invalidateTheme()
+                    },
+                    refresh = ::refreshVisibleIcons,
+                    trim = { iconCache.clear(); ThemedIconPolicy.trimSnapshots() },
+                    retry = { iconCache.clearFailures(); refreshVisibleIcons() },
+                    sourceOrderChanged = { sourceOrder = it }
+                )
             }
         }
     }
@@ -839,67 +841,64 @@ class ThemedIcons : XposedModule() {
         diskKey: String?
     ): Bitmap? {
         val hasNativeMono = (original as? AdaptiveIconDrawable)?.monochrome != null
-        // Keep the established home-screen artwork for packages with a known
-        // compatibility glyph. A live OEM asset may be a different design,
-        // not just a higher-resolution version of that glyph.
-        if (!isShortcut && !hasNativeMono && !Oos15MonochromeAssets.isReady(context)) {
-            environment?.requestSourceRetry()
-            return null
-        }
-        val legacy = if (!isShortcut && !hasNativeMono) {
-            Oos15MonochromeAssets.load(context, pkg, component)
-        } else null
-        val pixel = if (!isShortcut && !hasNativeMono && legacy == null) {
-            PixelLauncherThemedAssets.load(pkg)
-        } else null
-        val oplus = if (!isShortcut && !hasNativeMono && legacy == null && pixel == null &&
-            component != null) {
-            oplusSource.load(context, component)
-        } else OplusMonochromeSource.Result(null, false)
-        if (oplus.retry) {
-            environment?.requestSourceRetry()
-            return null
-        }
-        val liveMask = oplus.drawable?.let { glyph ->
-            runCatching {
-                OplusLiveMonoRenderer.render(glyph, PersistentMonoCache.SIZE) { detail ->
-                    moduleLog("oplus geometry pkg=$pkg: $detail")
-                }
-            }.onFailure {
-                moduleLog("oplus glyph render failed pkg=$pkg: ${it.message}", it)
-                environment?.requestSourceRetry()
-            }.getOrNull()
-        }
-        // A loading/render exception is not proof that dedicated artwork is absent.
-        if (oplus.drawable != null && liveMask == null) return null
-        val sourceName = when {
-            hasNativeMono -> "apk-native"
-            liveMask != null -> "oplus-live"
-            legacy != null -> "oos15"
-            pixel != null -> "pixel"
-            else -> "generated"
-        }
+        val size = PersistentMonoCache.SIZE
+        // Preserve the same priority on firmware where the stock hook is unavailable.
+        // Shortcuts must not borrow a package-level icon for a different activity.
+        val order = if (isShortcut) listOf("apk-native", "generated") else sourceOrder
+        var selected: String? = null
         val alpha = runCatching {
-            when {
-                liveMask != null -> liveMask
-                legacy != null -> NativeAssetMonoRenderer.renderOos15(
-                    BitmapDrawable(context.resources, legacy), PersistentMonoCache.SIZE)
-                pixel != null -> NativeAssetMonoRenderer.renderPixel(
-                    BitmapDrawable(context.resources, pixel), PersistentMonoCache.SIZE)
-                else -> runCatching {
-                    Pixel17MonochromeRenderer.render(original, PersistentMonoCache.SIZE, context.resources,
-                        matchThemeBackground = true, requireNative = hasNativeMono)
-                }.recoverCatching {
-                    if (hasNativeMono) throw it
-                    val software = extractSoftwareBitmap(original) ?: throw it
-                    Pixel17MonochromeRenderer.render(BitmapDrawable(context.resources, software),
-                        PersistentMonoCache.SIZE, context.resources, matchThemeBackground = true)
-                }.getOrThrow()
+            var mask: Bitmap? = null
+            for (source in order) {
+                mask = when (source) {
+                    "apk-native" -> if (hasNativeMono) {
+                        Pixel17MonochromeRenderer.render(original, size, context.resources,
+                            matchThemeBackground = true, requireNative = true)
+                    } else null
+                    "oos15" -> {
+                        if (!Oos15MonochromeAssets.isReady(context)) {
+                            environment?.requestSourceRetry()
+                            return null
+                        }
+                        Oos15MonochromeAssets.load(context, pkg, component)?.let {
+                            NativeAssetMonoRenderer.renderOos15(BitmapDrawable(context.resources, it), size)
+                        }
+                    }
+                    "pixel" -> PixelLauncherThemedAssets.load(pkg)?.let {
+                        NativeAssetMonoRenderer.renderPixel(BitmapDrawable(context.resources, it), size)
+                    }
+                    "oplus-live" -> if (component != null) {
+                        val result = oplusSource.load(context, component)
+                        if (result.retry) {
+                            environment?.requestSourceRetry()
+                            return null
+                        }
+                        result.drawable?.let { glyph ->
+                            OplusLiveMonoRenderer.render(glyph, size) { detail ->
+                                moduleLog("oplus geometry pkg=$pkg: $detail")
+                            }
+                        }
+                    } else null
+                    "generated" -> runCatching {
+                        Pixel17MonochromeRenderer.render(original, size, context.resources,
+                            matchThemeBackground = true, forceGenerated = true)
+                    }.recoverCatching {
+                        val software = extractSoftwareBitmap(original) ?: throw it
+                        Pixel17MonochromeRenderer.render(BitmapDrawable(context.resources, software),
+                            size, context.resources, matchThemeBackground = true, forceGenerated = true)
+                    }.getOrThrow()
+                    else -> null
+                }
+                if (mask != null) {
+                    selected = source
+                    break
+                }
             }
+            mask
         }.onFailure {
             moduleLog("skip mono render pkg=$pkg: ${it.message}")
             environment?.requestSourceRetry()
         }.getOrNull() ?: return null
+        val sourceName = selected ?: run { alpha.recycle(); return null }
         try {
             val result = colorizeMono(context, alpha)
             // Only persist if the sources still match the key captured before rendering.

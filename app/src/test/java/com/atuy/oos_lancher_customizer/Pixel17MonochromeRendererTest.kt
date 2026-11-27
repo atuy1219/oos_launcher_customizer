@@ -118,6 +118,26 @@ class Pixel17MonochromeRendererTest {
         record("native-monochrome", alpha)
     }
     @Test
+    fun generatedCanBeForcedWithoutUsingNativeMonochrome() {
+        val icon = AdaptiveIconDrawable(ColorDrawable(Color.BLACK),
+            Glyph(fraction = 0.4f, color = Color.WHITE),
+            Glyph(fraction = 0.15f, color = Color.WHITE))
+        val native = Pixel17MonochromeRenderer.render(icon, side, resources)
+        val generated = Pixel17MonochromeRenderer.render(icon, side, resources, forceGenerated = true)
+        val noNative = AdaptiveIconDrawable(ColorDrawable(Color.BLACK),
+            Glyph(fraction = 0.4f, color = Color.WHITE))
+        val reference = Pixel17MonochromeRenderer.render(noNative, side, resources)
+        try {
+            assertTrue(!native.sameAs(generated))
+            assertTrue(generated.sameAs(reference))
+        } finally {
+            native.recycle()
+            generated.recycle()
+            reference.recycle()
+        }
+    }
+
+    @Test
     fun brightGeneratedMarginUsesThemeBackgroundWithoutChangingGeometry() {
         val pixel = Pixel17MonochromeRenderer.render(Glyph(), side, resources)
         val themed = Pixel17MonochromeRenderer.render(
