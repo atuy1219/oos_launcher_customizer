@@ -8,10 +8,11 @@ import android.content.IntentFilter
 import android.content.pm.LauncherApps
 import android.content.pm.ShortcutInfo
 import android.content.res.Configuration
+import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
 import android.os.UserHandle
-import android.util.Log
+import java.io.File
 
 /** One observer set for the launcher process; bursts share one UI refresh. */
 internal class IconEnvironment(
@@ -23,9 +24,35 @@ internal class IconEnvironment(
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var scheduled = false
-    private val retryDelays = longArrayOf(500L, 1500L, 3000L, 6000L)
+    private val retryDelays = longArrayOf(0L, 100L, 500L, 2000L)
     private var retryAttempts = 0
     private var retryScheduled = false
+    private val uxRoot = File("/data/oplus/uxicons")
+    private var uxObserver: FileObserver? = null
+    private val uxChanged = Runnable {
+        watchUxIcons()
+        changed(true)
+    }
+
+    private fun watchUxIcons() {
+        uxObserver?.stopWatching()
+        uxObserver = null
+        if (!uxRoot.isDirectory || !uxRoot.canRead()) return
+        runCatching {
+            val paths = listOf(uxRoot) + uxRoot.listFiles()?.filter { it.isDirectory }.orEmpty()
+            val mask = FileObserver.CLOSE_WRITE or FileObserver.CREATE or FileObserver.DELETE or
+                FileObserver.MOVED_TO or FileObserver.MOVED_FROM or FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
+            uxObserver = object : FileObserver(paths, mask) {
+                override fun onEvent(event: Int, path: String?) {
+                    // Coalesce multi-file downloads, and re-arm for new package dirs.
+                    if (path != null && path.contains('.') && path.endsWith(".png") &&
+                        !path.contains("monochrome")) return
+                    handler.removeCallbacks(uxChanged)
+                    handler.postDelayed(uxChanged, 250L)
+                }
+            }.also { it.startWatching() }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "UXIcon observer unavailable", it) }
+    }
     private val retryTask = Runnable {
         retryScheduled = false
         retry()
@@ -49,13 +76,35 @@ internal class IconEnvironment(
     }
     private var current = appearance()
 
+    private fun resetSourceRetries() {
+        handler.removeCallbacks(retryTask)
+        retryScheduled = false
+        retryAttempts = 0
+    }
+
+    private fun onUserUnlocked() {
+        val hadObserver = uxObserver != null
+        watchUxIcons()
+        if (!hadObserver && uxObserver != null) {
+            // The source directory has become visible for the first time.
+            changed(true)
+            return
+        }
+        // Do not discard successful APK-based renders just because CE storage
+        // became available. If the palette changed, perform the normal refresh.
+        if (appearance() != current) {
+            changed()
+        } else {
+            resetSourceRetries()
+            retry()
+        }
+    }
+
     private fun changed(force: Boolean = false) {
         val next = appearance()
         if (!force && next == current) return
         current = next
-        handler.removeCallbacks(retryTask)
-        retryScheduled = false
-        retryAttempts = 0
+        resetSourceRetries()
         invalidate()
         if (!scheduled) {
             scheduled = true
@@ -76,7 +125,7 @@ internal class IconEnvironment(
     }
     private val unlocked = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_USER_UNLOCKED) changed(true)
+            if (intent?.action == Intent.ACTION_USER_UNLOCKED) onUserUnlocked()
         }
     }
     private val packages = object : LauncherApps.Callback() {
@@ -89,15 +138,16 @@ internal class IconEnvironment(
     }
 
     init {
+        watchUxIcons()
         context.registerComponentCallbacks(configuration)
         runCatching {
             context.registerReceiver(wallpaper, IntentFilter(Intent.ACTION_WALLPAPER_CHANGED), Context.RECEIVER_NOT_EXPORTED)
-        }.onFailure { Log.w("OOS_IconEnvironment", "Wallpaper observer unavailable", it) }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Wallpaper observer unavailable", it) }
         runCatching {
             context.registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_UNLOCKED), Context.RECEIVER_NOT_EXPORTED)
-        }.onFailure { Log.w("OOS_IconEnvironment", "Unlock observer unavailable", it) }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Unlock observer unavailable", it) }
         runCatching {
             context.getSystemService(LauncherApps::class.java)?.registerCallback(packages, handler)
-        }.onFailure { Log.w("OOS_IconEnvironment", "Package observer unavailable", it) }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Package observer unavailable", it) }
     }
 }

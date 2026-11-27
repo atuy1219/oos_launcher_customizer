@@ -277,9 +277,9 @@ class OplusFloatingIconGuard : XposedModule() {
 
     private fun moduleLog(msg: String, throwable: Throwable? = null) {
         if (throwable == null) {
-            log(Log.INFO, TAG, msg)
+            log(Log.INFO, null, "[$TAG] $msg")
         } else {
-            log(Log.ERROR, TAG, msg, throwable)
+            log(Log.ERROR, null, "[$TAG] $msg", throwable)
         }
     }
 }

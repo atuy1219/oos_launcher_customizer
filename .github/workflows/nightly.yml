@@ -83,6 +83,51 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Cache Robolectric runtime SDKs
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric/android-all-instrumented
+          key: robolectric-sdk-${{ runner.os }}-${{ hashFiles('app/build.gradle.kts', 'app/src/test/**/*.kt', '.github/workflows/nightly.yml') }}
+          restore-keys: robolectric-sdk-${{ runner.os }}-
+
+      - name: Provision Robolectric Android 14 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=14-robolectric-10818077-i7
+          artifact="android-all-instrumented-$version.jar"
+          relative="org/robolectric/android-all-instrumented/$version"
+          dest="$HOME/.m2/repository/$relative"
+          mkdir -p "$dest"
+          if [[ -s "$dest/$artifact" ]] && jar tf "$dest/$artifact" > /dev/null; then
+            echo "Using cached Robolectric Android 14 SDK"
+            exit 0
+          fi
+          rm -f "$dest/$artifact"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          fetch() {
+            curl --fail --silent --show-error --location --retry 2 --retry-delay 2 \
+              --connect-timeout 15 --max-time 180 "$1" -o "$2"
+          }
+          for base in https://repo.maven.apache.org/maven2 https://maven-central.storage-download.googleapis.com/maven2; do
+            url="$base/$relative/$artifact"
+            echo "Fetching Robolectric SDK from $base"
+            if fetch "$url.sha512" "$tmp/checksum" && fetch "$url" "$tmp/$artifact"; then
+              checksum="$(tr -d '\r\n' < "$tmp/checksum" | awk '{print $1}')"
+              if [[ "$checksum" =~ ^[0-9a-fA-F]{128}$ ]] &&
+                 printf '%s  %s\n' "$checksum" "$tmp/$artifact" | sha512sum --check --status &&
+                 jar tf "$tmp/$artifact" > /dev/null; then
+                mv "$tmp/$artifact" "$dest/$artifact"
+                echo "Verified Robolectric SDK installed"
+                exit 0
+              fi
+              echo "SDK checksum or archive validation failed for $base" >&2
+            fi
+          done
+          echo "Unable to provision verified Robolectric SDK" >&2
+          exit 1
+
       - name: Build installable Nightly APK
         shell: bash
         run: |

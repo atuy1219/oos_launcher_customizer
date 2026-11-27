@@ -50,6 +50,8 @@ class IconEnvironmentTest {
             environment.requestSourceRetry()
         })
         repeat(20) { environment.requestSourceRetry() }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, retries)
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(20))
         assertEquals(4, retries)
     }

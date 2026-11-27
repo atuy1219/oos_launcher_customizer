@@ -4,7 +4,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.Log
 import android.util.LruCache
 import java.io.InputStream
 import java.util.zip.ZipInputStream
@@ -20,13 +19,6 @@ internal object Oos15MonochromeAssets {
     private const val BUNDLE = "oos15_monochrome.zip"
     private const val MAIN_GLYPH = "monochrome.png"
     private const val DIALER_GLYPH = "dialer_monochrome.png"
-
-    /**
-     * Apply the same 1.5x foreground canvas scale to every bundled OOS15
-     * monochrome image; leave background circle and fallback paths unchanged.
-     * PNG artwork that approaches an edge may clip at the circular mask.
-     */
-    internal const val GLYPH_SCALE = 1.50f
 
     @Volatile private var bytesByPackage: Map<String, ByteArray>? = null
     private val decoded = object : LruCache<String, Bitmap>(8 * 1024) {
@@ -65,11 +57,11 @@ internal object Oos15MonochromeAssets {
         val source = assets[selectedKey] ?: return null
         val bitmap = BitmapFactory.decodeByteArray(source, 0, source.size)
         if (bitmap == null) {
-            Log.w(TAG, "Invalid PNG: $selectedKey")
+            ModuleDiagnostics.w(TAG, "Invalid PNG: $selectedKey")
             return null
         }
         decoded.put(selectedKey, bitmap)
-        Log.i(TAG, "Using original OOS15 monochrome: $selectedKey")
+        ModuleDiagnostics.i(TAG, "Using original OOS15 monochrome: $selectedKey")
         return bitmap
     }
 
@@ -85,13 +77,13 @@ internal object Oos15MonochromeAssets {
                 readBundle(stream, result)
             }
         } catch (t: Exception) {
-            Log.e(TAG, "Cannot access bundled OOS15 PNGs; deferring fallback", t)
+            ModuleDiagnostics.e(TAG, "Cannot access bundled OOS15 PNGs; deferring fallback", t)
             return null
         }
         if (result.isEmpty()) return null
         val assets = result.mapValues { it.value.second }
         bytesByPackage = assets
-        Log.i(TAG, "Loaded OOS15 monochrome bundle: ${assets.keys.count { it.endsWith("/monochrome.png") }} packages")
+        ModuleDiagnostics.i(TAG, "Loaded OOS15 monochrome bundle: ${assets.keys.count { it.endsWith("/monochrome.png") }} packages")
         return assets
     }
 
