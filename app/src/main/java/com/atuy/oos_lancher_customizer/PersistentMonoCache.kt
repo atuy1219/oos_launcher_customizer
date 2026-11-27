@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
 internal class PersistentMonoCache {
     companion object {
         const val SIZE = 192
-        private const val SCHEMA = "mono-v8-live-adaptive-inset"
+        private const val SCHEMA = "mono-v9-hybrid-stock"
         private val SOURCES = listOf("apk-native", "oplus-live", "oos15", "pixel", "generated")
         private const val MAX_FILES = 384
         private val ROOTS = listOf("/data/oplus/uxicons",

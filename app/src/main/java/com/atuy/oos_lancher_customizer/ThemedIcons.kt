@@ -48,6 +48,8 @@ class ThemedIcons : XposedModule() {
 
     private val iconCache = IconBitmapCache()
     private val oplusSource = OplusMonochromeSource()
+    private val stockMono = StockMonoPipeline()
+    @Volatile private var sourceOrder = MonoSourceOrder.DEFAULT
     private val monoCache = PersistentMonoCache()
     @Volatile private var environment: IconEnvironment? = null
 
@@ -96,7 +98,9 @@ class ThemedIcons : XposedModule() {
     private fun prepare(context: Context) {
         if (environment != null) return
         synchronized(this) {
-            if (environment == null) environment = IconEnvironment(
+            if (environment == null) {
+                sourceOrder = MonoSourceOrder.parse(android.provider.Settings.Global.getString(context.contentResolver, MonoSourceOrder.KEY))
+                environment = IconEnvironment(
                 context.applicationContext ?: context,
                 invalidate = {
                     iconCache.clear()
@@ -105,8 +109,10 @@ class ThemedIcons : XposedModule() {
                 },
                 refresh = ::refreshVisibleIcons,
                 trim = { iconCache.clear(); ThemedIconPolicy.trimSnapshots() },
-                retry = { iconCache.clearFailures(); refreshVisibleIcons() }
+                retry = { iconCache.clearFailures(); refreshVisibleIcons() },
+                sourceOrderChanged = { sourceOrder = it }
             )
+            }
         }
     }
 
@@ -186,6 +192,10 @@ class ThemedIcons : XposedModule() {
         }
         moduleLog("icon diagnostics enabled")
         oplusSource.initialize(classLoader)
+        stockMono.install(classLoader) { method, id, interceptor ->
+            method.isAccessible = true
+            hook(method).setId(id).intercept { chain -> interceptor(chain) }
+        }
         val bubbleTextViewClass = Class.forName(BTV_CLASS, false, classLoader)
         hookAllNamedMethods(bubbleTextViewClass, "setIcon", "bubble-setIcon") { chain ->
             val args = chain.args.toTypedArray()
@@ -760,7 +770,21 @@ class ThemedIcons : XposedModule() {
                 user == android.os.Process.myUserHandle()) {
                 monoCache.key(context, component, user)
             } else null
-            if (diskKey != null) {
+            val unthemed = if (ThemedIconPolicy.isKnownThemedDrawable(fallback)) {
+                originalBinding?.restore(context) ?: fallback
+            } else fallback
+            val source = resolveBestSourceDrawable(context, item, unthemed)
+            if (source == null || ThemedIconPolicy.isKnownThemedDrawable(source)) {
+                environment?.requestSourceRetry()
+                return@getOrLoad null
+            }
+            if (component != null && resolveItemType(item) == 0 &&
+                !isShortcutLikeItem(item) && user == android.os.Process.myUserHandle()) {
+                stockMono.render(context, component, source, sourceOrder)?.let { stock ->
+                    runCatching { stockMono.rasterize(stock) }.getOrNull()?.let { return@getOrLoad it }
+                }
+            }
+            if (diskKey != null && sourceOrder == MonoSourceOrder.DEFAULT) {
                 monoCache.read(context, diskKey)?.let { entry ->
                     try {
                         moduleLog("theme source pkg=$pkg: ${entry.source} cache=disk component=$component")
@@ -770,16 +794,8 @@ class ThemedIcons : XposedModule() {
                     }
                 }
             }
-            val unthemed = if (ThemedIconPolicy.isKnownThemedDrawable(fallback)) {
-                originalBinding?.restore(context) ?: fallback
-            } else fallback
-            val source = resolveBestSourceDrawable(context, item, unthemed)
-            if (source == null || ThemedIconPolicy.isKnownThemedDrawable(source)) {
-                environment?.requestSourceRetry()
-                return@getOrLoad null
-            }
             generateRawThemedBitmap(context, pkg, source,
-                isShortcutLikeItem(item), component, diskKey)
+                isShortcutLikeItem(item), component, if (sourceOrder == MonoSourceOrder.DEFAULT) diskKey else null)
         } ?: return null
         return bitmap.toDrawable(context.resources)
     }
