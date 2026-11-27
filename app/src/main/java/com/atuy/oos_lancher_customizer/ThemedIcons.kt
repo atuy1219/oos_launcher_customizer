@@ -180,6 +180,11 @@ class ThemedIcons : XposedModule() {
     }
 
     private fun installHooks(classLoader: ClassLoader) {
+        ModuleDiagnostics.install { level, message, error ->
+            if (error == null) log(level, null, message)
+            else log(level, null, message, error)
+        }
+        moduleLog("icon diagnostics enabled")
         oplusSource.initialize(classLoader)
         val bubbleTextViewClass = Class.forName(BTV_CLASS, false, classLoader)
         hookAllNamedMethods(bubbleTextViewClass, "setIcon", "bubble-setIcon") { chain ->
@@ -756,11 +761,12 @@ class ThemedIcons : XposedModule() {
                 monoCache.key(context, component, user)
             } else null
             if (diskKey != null) {
-                monoCache.read(context, diskKey)?.let { alpha ->
+                monoCache.read(context, diskKey)?.let { entry ->
                     try {
-                        return@getOrLoad colorizeMono(context, alpha)
+                        moduleLog("theme source pkg=$pkg: ${entry.source} cache=disk component=$component")
+                        return@getOrLoad colorizeMono(context, entry.alpha)
                     } finally {
-                        alpha.recycle()
+                        entry.alpha.recycle()
                     }
                 }
             }
@@ -785,9 +791,9 @@ class ThemedIcons : XposedModule() {
 
     private fun moduleLog(msg: String, throwable: Throwable? = null) {
         if (throwable == null) {
-            log(Log.INFO, TAG, msg)
+            log(Log.INFO, null, "[$TAG] $msg")
         } else {
-            log(Log.ERROR, TAG, msg, throwable)
+            log(Log.ERROR, null, "[$TAG] $msg", throwable)
         }
     }
 
@@ -871,9 +877,9 @@ class ThemedIcons : XposedModule() {
             // Only persist if the sources still match the key captured before rendering.
             if (diskKey != null && component != null &&
                 diskKey == monoCache.key(context, component, android.os.Process.myUserHandle())) {
-                monoCache.write(context, diskKey, alpha)
+                monoCache.write(context, diskKey, alpha, sourceName)
             }
-            moduleLog("theme source pkg=$pkg: $sourceName")
+            moduleLog("theme source pkg=$pkg: $sourceName cache=miss component=$component raw=${original.javaClass.name} shortcut=$isShortcut")
             return result
         } finally {
             alpha.recycle()

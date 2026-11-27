@@ -6,7 +6,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.util.Base64
-import android.util.Log
 import android.util.LruCache
 import androidx.core.graphics.PathParser
 import org.json.JSONObject
@@ -71,7 +70,7 @@ internal object PixelLauncherThemedAssets {
             val decoded = InflaterInputStream(ByteArrayInputStream(raw))
                 .bufferedReader(Charsets.UTF_8).use { it.readText() }
             JSONObject(decoded).also { paths = it }
-        }.onFailure { Log.e(TAG, "Unable to decode Pixel Launcher vector data", it) }
+        }.onFailure { ModuleDiagnostics.e(TAG, "Unable to decode Pixel Launcher vector data", it) }
             .getOrNull()
     }
 
@@ -93,8 +92,8 @@ internal object PixelLauncherThemedAssets {
                 canvas.drawPath(path, paint)
             }
             bitmapCache.put(glyph, bitmap)
-            Log.i(TAG, "Using Pixel Launcher original vector for $packageName")
+            ModuleDiagnostics.i(TAG, "Using Pixel Launcher original vector for $packageName")
             bitmap
-        }.onFailure { Log.e(TAG, "Failed to render $packageName", it) }.getOrNull()
+        }.onFailure { ModuleDiagnostics.e(TAG, "Failed to render $packageName", it) }.getOrNull()
     }
 }

@@ -21,7 +21,8 @@ import java.util.concurrent.TimeUnit
 internal class PersistentMonoCache {
     companion object {
         const val SIZE = 192
-        private const val SCHEMA = "mono-v2-compat-artwork"
+        private const val SCHEMA = "mono-v3-source-provenance"
+        private val SOURCES = listOf("apk-native", "oplus-live", "oos15", "pixel", "generated")
         private const val MAX_FILES = 384
         private val ROOTS = listOf("/data/oplus/uxicons",
             "/my_product/media/theme/uxicons", "/my_stock/media/theme/uxicons",
@@ -91,15 +92,23 @@ internal class PersistentMonoCache {
             .joinToString("") { "%02x".format(it.toInt() and 255) }
     }.getOrNull()
 
-    fun read(context: Context, key: String): Bitmap? = runCatching {
+    data class Entry(val alpha: Bitmap, val source: String)
+
+    fun read(context: Context, key: String): Entry? = runCatching {
         val file = File(directory(context), "$key.alpha")
-        if (!file.isFile || file.length() != (SIZE * SIZE).toLong()) return null
-        unpack(AtomicFile(file).readFully())
+        if (!file.isFile || file.length() != (SIZE * SIZE + 1).toLong()) return null
+        val bytes = AtomicFile(file).readFully()
+        if (bytes.size != SIZE * SIZE + 1) return null
+        val source = SOURCES.getOrNull(bytes[0].toInt()) ?: return null
+        val alpha = unpack(bytes.copyOfRange(1, bytes.size)) ?: return null
+        Entry(alpha, source)
     }.getOrNull()
 
-    fun write(context: Context, key: String, bitmap: Bitmap) {
+    fun write(context: Context, key: String, bitmap: Bitmap, source: String) {
         val dir = runCatching { directory(context) }.getOrNull() ?: return
-        val bytes = runCatching { pack(bitmap) }.getOrNull() ?: return
+        val sourceId = SOURCES.indexOf(source)
+        if (sourceId < 0) return
+        val bytes = runCatching { byteArrayOf(sourceId.toByte()) + pack(bitmap) }.getOrNull() ?: return
         writer.execute {
             runCatching {
                 if (!dir.isDirectory && !dir.mkdirs()) return@runCatching

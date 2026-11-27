@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.drawable.Drawable
 import android.os.UserManager
 import java.io.File
-import android.util.Log
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
@@ -21,7 +20,7 @@ internal class OplusMonochromeSource {
                 .takeIf { Modifier.isStatic(it.modifiers) && Drawable::class.java.isAssignableFrom(it.returnType) }
                 ?.apply { isAccessible = true }
         }.getOrNull()
-        Log.i("OOS_LiveMono", "Native UXIcon loader available: ${loader != null}")
+        ModuleDiagnostics.i("OOS_LiveMono", "Native UXIcon loader available: ${loader != null}")
     }
 
     fun load(context: Context, component: ComponentName): Result {
@@ -38,7 +37,7 @@ internal class OplusMonochromeSource {
                 ?: (method.invoke(null, context, component, "") as? Drawable)
             Result(drawable?.constantState?.newDrawable(context.resources)?.mutate() ?: drawable, false)
         }.getOrElse {
-            Log.w("OOS_LiveMono", "Deferred OEM icon: $component", it)
+            ModuleDiagnostics.w("OOS_LiveMono", "Deferred OEM icon: $component", it)
             Result(null, true)
         }
     }

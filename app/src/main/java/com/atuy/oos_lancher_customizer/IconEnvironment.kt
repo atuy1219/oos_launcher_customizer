@@ -12,7 +12,6 @@ import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
 import android.os.UserHandle
-import android.util.Log
 import java.io.File
 
 /** One observer set for the launcher process; bursts share one UI refresh. */
@@ -52,7 +51,7 @@ internal class IconEnvironment(
                     handler.postDelayed(uxChanged, 250L)
                 }
             }.also { it.startWatching() }
-        }.onFailure { Log.w("OOS_IconEnvironment", "UXIcon observer unavailable", it) }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "UXIcon observer unavailable", it) }
     }
     private val retryTask = Runnable {
         retryScheduled = false
@@ -143,12 +142,12 @@ internal class IconEnvironment(
         context.registerComponentCallbacks(configuration)
         runCatching {
             context.registerReceiver(wallpaper, IntentFilter(Intent.ACTION_WALLPAPER_CHANGED), Context.RECEIVER_NOT_EXPORTED)
-        }.onFailure { Log.w("OOS_IconEnvironment", "Wallpaper observer unavailable", it) }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Wallpaper observer unavailable", it) }
         runCatching {
             context.registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_UNLOCKED), Context.RECEIVER_NOT_EXPORTED)
-        }.onFailure { Log.w("OOS_IconEnvironment", "Unlock observer unavailable", it) }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Unlock observer unavailable", it) }
         runCatching {
             context.getSystemService(LauncherApps::class.java)?.registerCallback(packages, handler)
-        }.onFailure { Log.w("OOS_IconEnvironment", "Package observer unavailable", it) }
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Package observer unavailable", it) }
     }
 }
