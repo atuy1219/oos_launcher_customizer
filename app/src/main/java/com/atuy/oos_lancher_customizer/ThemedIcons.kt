@@ -844,16 +844,28 @@ class ThemedIcons : XposedModule() {
             environment?.requestSourceRetry()
             return null
         }
+        val liveMask = oplus.drawable?.let { glyph ->
+            runCatching {
+                OplusLiveMonoRenderer.render(glyph, PersistentMonoCache.SIZE) { detail ->
+                    moduleLog("oplus geometry pkg=$pkg: $detail")
+                }
+            }.onFailure {
+                moduleLog("oplus glyph render failed pkg=$pkg: ${it.message}", it)
+                environment?.requestSourceRetry()
+            }.getOrNull()
+        }
+        // A loading/render exception is not proof that dedicated artwork is absent.
+        if (oplus.drawable != null && liveMask == null) return null
         val sourceName = when {
             hasNativeMono -> "apk-native"
-            oplus.drawable != null -> "oplus-live"
+            liveMask != null -> "oplus-live"
             legacy != null -> "oos15"
             pixel != null -> "pixel"
             else -> "generated"
         }
         val alpha = runCatching {
             when {
-                oplus.drawable != null -> rasterizeGlyph(context, oplus.drawable, 1f)
+                liveMask != null -> liveMask
                 legacy != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, legacy),
                     Oos15MonochromeAssets.GLYPH_SCALE)
                 pixel != null -> rasterizeGlyph(context, BitmapDrawable(context.resources, pixel),

@@ -33,9 +33,15 @@ internal class OplusMonochromeSource {
                 return Result(null, true)
             }
             // Same two calls as MorphIcon_Mono: explicit dimensions, then 1x1.
-            val drawable = (method.invoke(null, context, component, "_1x1") as? Drawable)
-                ?: (method.invoke(null, context, component, "") as? Drawable)
-            Result(drawable?.constantState?.newDrawable(context.resources)?.mutate() ?: drawable, false)
+            val sized = method.invoke(null, context, component, "_1x1") as? Drawable
+            val drawable = sized ?: (method.invoke(null, context, component, "") as? Drawable)
+            // t0's cache returns newDrawable() without a Resources override.
+            // Preserve the same intrinsic size for a density-aware BitmapDrawable.
+            val copy = drawable?.constantState?.newDrawable()?.mutate() ?: drawable
+            if (copy != null) {
+                ModuleDiagnostics.i("OOS_LiveMono", "asset pkg=${component.packageName} suffix=${if (sized != null) "_1x1" else "default"} intrinsic=${copy.intrinsicWidth}x${copy.intrinsicHeight} type=${copy.javaClass.name}")
+            }
+            Result(copy, false)
         }.getOrElse {
             ModuleDiagnostics.w("OOS_LiveMono", "Deferred OEM icon: $component", it)
             Result(null, true)
