@@ -22,14 +22,14 @@ internal object Pixel17MonochromeRenderer {
     fun render(
         source: Drawable, size: Int, resources: Resources,
         matchThemeBackground: Boolean = false,
-        requireNative: Boolean = false
+        requireNative: Boolean = false, forceGenerated: Boolean = false
     ): Bitmap {
         // Work on a private drawable: AdaptiveIconDrawable updates child bounds.
         val icon = source.constantState?.newDrawable(resources)?.mutate() ?: source
         val oldBounds = Rect(icon.bounds)
         try {
             val extra = AdaptiveIconDrawable.getExtraInsetFraction()
-            val native = (icon as? AdaptiveIconDrawable)?.monochrome
+            val native = if (forceGenerated) null else (icon as? AdaptiveIconDrawable)?.monochrome
             check(!requireNative || native != null) { "Native monochrome layer unavailable" }
             // Generated monochrome is a temporary ALPHA_8 bitmap, not a cache entry.
             // Never recycle the app-owned native monochrome Drawable.
