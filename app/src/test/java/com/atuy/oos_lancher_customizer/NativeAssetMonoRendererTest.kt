@@ -63,4 +63,33 @@ class NativeAssetMonoRendererTest {
         mask.recycle()
         target.recycle()
     }
+
+    @Test fun liveOemSquareUsesAdaptiveInsetAndPreservesAlpha() {
+        val artwork = Bitmap.createBitmap(240, 240, Bitmap.Config.ARGB_8888)
+        val paint = Paint().apply { color = Color.argb(128, 255, 255, 255) }
+        Canvas(artwork).drawRect(80f, 80f, 160f, 160f, paint)
+        val resources = android.content.res.Resources.getSystem()
+        val glyph = android.graphics.drawable.BitmapDrawable(resources, artwork)
+        val reference = InsetDrawable(
+            android.graphics.drawable.BitmapDrawable(resources, artwork),
+            -AdaptiveIconDrawable.getExtraInsetFraction()
+        )
+        val target = Bitmap.createBitmap(192, 192, Bitmap.Config.ARGB_8888)
+        reference.setBounds(0, 0, 192, 192)
+        reference.draw(Canvas(target))
+        val expected = target.extractAlpha()
+        val actual = OplusLiveMonoRenderer.render(glyph, 192) {}
+        assertArrayEquals(PersistentMonoCache.pack(expected), PersistentMonoCache.pack(actual))
+        val bytes = PersistentMonoCache.pack(actual)
+        assertEquals(128, bytes[96 * 192 + 96].toInt() and 255)
+        assertEquals(0, bytes[0].toInt() and 255)
+        // This point is outside the unexpanded glyph (64..128), but
+        // inside the native expanded glyph (48..144).
+        assertEquals(128, bytes[96 * 192 + 56].toInt() and 255)
+        assertEquals(Rect(), glyph.bounds)
+        actual.recycle()
+        expected.recycle()
+        target.recycle()
+        artwork.recycle()
+    }
 }
