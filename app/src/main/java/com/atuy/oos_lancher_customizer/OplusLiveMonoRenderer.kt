@@ -17,21 +17,23 @@ import kotlin.math.roundToInt
 internal object OplusLiveMonoRenderer {
     data class Geometry(val width: Int, val height: Int, val left: Int, val top: Int)
 
-    internal fun geometry(width: Int, height: Int, size: Int): Geometry {
+    internal fun geometry(width: Int, height: Int, size: Int, mode: OplusMonoScale = OplusMonoScale.NATIVE): Geometry {
         require(width > 0 && height > 0 && size > 0)
         val x = size.toFloat() / width
         val y = size.toFloat() / height
         // The native square-format mono path fills the frame for near-square
         // art (< 0.1 ratio difference). Other art is centered, scaled down only
         // when it exceeds the available frame; no independent X/Y stretch.
-        val scale = if (abs(1f - width.toFloat() / height) < 0.1f) max(x, y)
-                    else min(1f, min(x, y))
+        val scale = mode.factor?.let { it * min(x, y) }
+            ?: if (abs(1f - width.toFloat() / height) < 0.1f) max(x, y)
+            else min(1f, min(x, y))
         val w = (width * scale).roundToInt().coerceAtLeast(1)
         val h = (height * scale).roundToInt().coerceAtLeast(1)
         return Geometry(w, h, (size - w) / 2, (size - h) / 2)
     }
 
-    fun render(source: Drawable, size: Int, diagnostic: (String) -> Unit): Bitmap {
+    fun render(source: Drawable, size: Int, mode: OplusMonoScale = OplusMonoScale.NATIVE,
+               diagnostic: (String) -> Unit): Bitmap {
         require(size == PersistentMonoCache.SIZE)
         val glyph = source.constantState?.newDrawable()?.mutate() ?: source
         val old = Rect(glyph.bounds)
@@ -40,7 +42,7 @@ internal object OplusLiveMonoRenderer {
             ?: pixels?.width ?: old.width().takeIf { it > 0 } ?: size
         val height = glyph.intrinsicHeight.takeIf { it > 0 }
             ?: pixels?.height ?: old.height().takeIf { it > 0 } ?: size
-        val g = geometry(width, height, size)
+        val g = geometry(width, height, size, mode)
         // Rasterize to ARGB first, as tr.m.o does. Non-game themed artwork is
         // recolored with SRC_IN by tr.m.a0: its shape comes from alpha, not RGB.
         val flat = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -68,7 +70,7 @@ internal object OplusLiveMonoRenderer {
                     if (a == 0) empty++
                     count++
                 }
-                diagnostic("intrinsic=${width}x$height bitmap=${pixels?.width}x${pixels?.height} bounds=$g alpha=$low..$high solid=$solid empty=$empty visible=$count")
+                diagnostic("mode=${mode.cacheToken} intrinsic=${width}x$height bitmap=${pixels?.width}x${pixels?.height} bounds=$g alpha=$low..$high solid=$solid empty=$empty visible=$count")
                 return alpha
             } catch (error: Throwable) {
                 alpha.recycle()

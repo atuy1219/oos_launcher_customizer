@@ -8,6 +8,8 @@ import android.content.IntentFilter
 import android.content.pm.LauncherApps
 import android.content.pm.ShortcutInfo
 import android.content.res.Configuration
+import android.database.ContentObserver
+import android.provider.Settings
 import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
@@ -20,7 +22,8 @@ internal class IconEnvironment(
     private val invalidate: () -> Unit,
     private val refresh: () -> Unit,
     private val trim: () -> Unit,
-    private val retry: () -> Unit = refresh
+    private val retry: () -> Unit = refresh,
+    private val onScaleChanged: () -> Boolean = { false }
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var scheduled = false
@@ -83,9 +86,10 @@ internal class IconEnvironment(
     }
 
     private fun onUserUnlocked() {
+        val scaleChanged = onScaleChanged()
         val hadObserver = uxObserver != null
         watchUxIcons()
-        if (!hadObserver && uxObserver != null) {
+        if (scaleChanged || (!hadObserver && uxObserver != null)) {
             // The source directory has become visible for the first time.
             changed(true)
             return
@@ -137,7 +141,17 @@ internal class IconEnvironment(
         override fun onShortcutsChanged(packageName: String, shortcuts: MutableList<ShortcutInfo>, user: UserHandle) { changed(true) }
     }
 
+    private val scaleObserver = object : ContentObserver(handler) {
+        override fun onChange(selfChange: Boolean) {
+            if (onScaleChanged()) changed(true)
+        }
+    }
+
     init {
+        runCatching {
+            context.contentResolver.registerContentObserver(
+                Settings.Global.getUriFor(OplusMonoScale.KEY), false, scaleObserver)
+        }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Scale observer unavailable", it) }
         watchUxIcons()
         context.registerComponentCallbacks(configuration)
         runCatching {

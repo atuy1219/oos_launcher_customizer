@@ -49,6 +49,15 @@ class ThemedIcons : XposedModule() {
     private val iconCache = IconBitmapCache()
     private val oplusSource = OplusMonochromeSource()
     private val monoCache = PersistentMonoCache()
+    @Volatile private var liveScale = OplusMonoScale.NATIVE
+
+    private fun reloadLiveScale(context: Context): Boolean {
+        val next = OplusMonoScale.read(context)
+        val changed = next != liveScale
+        if (changed) liveScale = next
+        moduleLog("oplus-live scale=${next.cacheToken}")
+        return changed
+    }
     @Volatile private var environment: IconEnvironment? = null
 
     private data class Binding(
@@ -96,8 +105,11 @@ class ThemedIcons : XposedModule() {
     private fun prepare(context: Context) {
         if (environment != null) return
         synchronized(this) {
-            if (environment == null) environment = IconEnvironment(
-                context.applicationContext ?: context,
+            if (environment == null) {
+                val app = context.applicationContext ?: context
+                reloadLiveScale(app)
+                environment = IconEnvironment(
+                app,
                 invalidate = {
                     iconCache.clear()
                     bigFolderViewCache.clear()
@@ -105,8 +117,10 @@ class ThemedIcons : XposedModule() {
                 },
                 refresh = ::refreshVisibleIcons,
                 trim = { iconCache.clear(); ThemedIconPolicy.trimSnapshots() },
-                retry = { iconCache.clearFailures(); refreshVisibleIcons() }
-            )
+                retry = { iconCache.clearFailures(); refreshVisibleIcons() },
+                onScaleChanged = { reloadLiveScale(app) }
+                )
+            }
         }
     }
 
@@ -755,10 +769,11 @@ class ThemedIcons : XposedModule() {
                 "${ThemedIconPolicy.itemKey(item)}|$version"
             }
         }
-        val bitmap = iconCache.getOrLoad(key) {
+        val scale = liveScale
+        val bitmap = iconCache.getOrLoad("$key|live=${scale.cacheToken}") {
             val diskKey = if (!isShortcutLikeItem(item) && component != null &&
                 user == android.os.Process.myUserHandle()) {
-                monoCache.key(context, component, user)
+                monoCache.key(context, component, user, scale.cacheToken)
             } else null
             if (diskKey != null) {
                 monoCache.read(context, diskKey)?.let { entry ->
@@ -779,7 +794,7 @@ class ThemedIcons : XposedModule() {
                 return@getOrLoad null
             }
             generateRawThemedBitmap(context, pkg, source,
-                isShortcutLikeItem(item), component, diskKey)
+                isShortcutLikeItem(item), component, diskKey, scale)
         } ?: return null
         return bitmap.toDrawable(context.resources)
     }
@@ -820,7 +835,8 @@ class ThemedIcons : XposedModule() {
         original: Drawable,
         isShortcut: Boolean,
         component: ComponentName?,
-        diskKey: String?
+        diskKey: String?,
+        scale: OplusMonoScale
     ): Bitmap? {
         val hasNativeMono = (original as? AdaptiveIconDrawable)?.monochrome != null
         // Keep the established home-screen artwork for packages with a known
@@ -846,7 +862,7 @@ class ThemedIcons : XposedModule() {
         }
         val liveMask = oplus.drawable?.let { glyph ->
             runCatching {
-                OplusLiveMonoRenderer.render(glyph, PersistentMonoCache.SIZE) { detail ->
+                OplusLiveMonoRenderer.render(glyph, PersistentMonoCache.SIZE, scale) { detail ->
                     moduleLog("oplus geometry pkg=$pkg: $detail")
                 }
             }.onFailure {
@@ -888,7 +904,8 @@ class ThemedIcons : XposedModule() {
             val result = colorizeMono(context, alpha)
             // Only persist if the sources still match the key captured before rendering.
             if (diskKey != null && component != null &&
-                diskKey == monoCache.key(context, component, android.os.Process.myUserHandle())) {
+                scale == liveScale &&
+                diskKey == monoCache.key(context, component, android.os.Process.myUserHandle(), scale.cacheToken)) {
                 monoCache.write(context, diskKey, alpha, sourceName)
             }
             moduleLog("theme source pkg=$pkg: $sourceName cache=miss component=$component raw=${original.javaClass.name} shortcut=$isShortcut")
