@@ -14,20 +14,21 @@ internal data class OplusMonoScale private constructor(val factor: Float?) {
 
         internal fun parse(value: String?): OplusMonoScale? {
             val text = value?.trim() ?: return NATIVE
-            if (text.isEmpty() || text.equals("native", ignoreCase = true)) return NATIVE
+            if (text.isEmpty() || text.equals("native", ignoreCase = true) ||
+                text.equals("default", ignoreCase = true)) return NATIVE
             val number = text.toFloatOrNull() ?: return null
             if (!number.isFinite() || number !in 0.1f..4f) return null
             return OplusMonoScale(number)
         }
 
-        fun read(context: Context): OplusMonoScale {
+        fun read(context: Context, key: String = KEY): OplusMonoScale {
             val raw = runCatching {
-                Settings.Global.getString(context.contentResolver, KEY)
+                Settings.Global.getString(context.contentResolver, key)
             }.onFailure {
                 ModuleDiagnostics.w("OOS_LiveMono", "Cannot read global scale; using native", it)
             }.getOrNull()
             return parse(raw) ?: NATIVE.also {
-                ModuleDiagnostics.w("OOS_LiveMono", "Invalid scale '$raw'; using native")
+                ModuleDiagnostics.w("OOS_LiveMono", "Invalid scale $key='$raw'; using native")
             }
         }
     }

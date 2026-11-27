@@ -149,8 +149,10 @@ internal class IconEnvironment(
 
     init {
         runCatching {
-            context.contentResolver.registerContentObserver(
-                Settings.Global.getUriFor(OplusMonoScale.KEY), false, scaleObserver)
+            for (key in IconSourceScales.KEYS) {
+                context.contentResolver.registerContentObserver(
+                    Settings.Global.getUriFor(key), false, scaleObserver)
+            }
         }.onFailure { ModuleDiagnostics.w("OOS_IconEnvironment", "Scale observer unavailable", it) }
         watchUxIcons()
         context.registerComponentCallbacks(configuration)

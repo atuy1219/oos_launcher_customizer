@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
 internal class PersistentMonoCache {
     companion object {
         const val SIZE = 192
-        private const val SCHEMA = "mono-v5-oplus-configurable-scale"
+        private const val SCHEMA = "mono-v6-source-scales"
         private val SOURCES = listOf("apk-native", "oplus-live", "oos15", "pixel", "generated")
         private const val MAX_FILES = 384
         private val ROOTS = listOf("/data/oplus/uxicons",
@@ -56,7 +56,7 @@ internal class PersistentMonoCache {
     private fun directory(context: Context) =
         File(context.createDeviceProtectedStorageContext().cacheDir, "oos-customizer-mono-v1")
 
-    fun key(context: Context, component: ComponentName, user: UserHandle, liveScale: String = "native"): String? = runCatching {
+    fun key(context: Context, component: ComponentName, user: UserHandle, scaleToken: String = IconSourceScales.DEFAULT.cacheToken): String? = runCatching {
         if (context.getSystemService(UserManager::class.java)?.isUserUnlocked != true &&
             !File("/data/oplus/uxicons").canRead()) return null
         val pm = context.packageManager
@@ -67,7 +67,7 @@ internal class PersistentMonoCache {
         val module = pm.getPackageInfo("com.atuy.oos_lancher_customizer", flags)
         val signature = buildString {
             append(SCHEMA).append('|').append(Build.FINGERPRINT)
-            append('|').append(liveScale)
+            append('|').append(scaleToken)
             append('|').append(component.flattenToString()).append('|').append(user)
             append('|').append(app.longVersionCode).append('|').append(app.lastUpdateTime)
             append('|').append(launcher.longVersionCode).append('|').append(launcher.lastUpdateTime)

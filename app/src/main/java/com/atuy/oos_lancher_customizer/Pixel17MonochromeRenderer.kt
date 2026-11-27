@@ -22,8 +22,10 @@ internal object Pixel17MonochromeRenderer {
     fun render(
         source: Drawable, size: Int, resources: Resources,
         matchThemeBackground: Boolean = false,
-        requireNative: Boolean = false
+        requireNative: Boolean = false,
+        scale: Float = 1f
     ): Bitmap {
+        require(scale.isFinite() && scale in 0.1f..4f)
         // Work on a private drawable: AdaptiveIconDrawable updates child bounds.
         val icon = source.constantState?.newDrawable(resources)?.mutate() ?: source
         val oldBounds = Rect(icon.bounds)
@@ -40,10 +42,26 @@ internal object Pixel17MonochromeRenderer {
                 // MonoIconThemeController#createThemedBitmap uses this exact negative
                 // inset for BOTH native monochrome and generated alpha drawables.
                 val inset = InsetDrawable(layer, -extra)
-                inset.setBounds(0, 0, size, size)
+                // Native monochrome is re-rendered from its original layer,
+                // not an already clipped output. Synthetic matte polarity
+                // must be resolved on the default frame before scaling.
+                inset.bounds = if (native != null) scaledBounds(size, scale)
+                    else Rect(0, 0, size, size)
                 try {
                     inset.draw(Canvas(bitmap))
                     if (matchThemeBackground && native == null) alignGeneratedBackground(bitmap)
+                    if (native == null && scale != 1f) {
+                        val scaled = Bitmap.createBitmap(size, size, Bitmap.Config.ALPHA_8)
+                        try {
+                            Canvas(scaled).drawBitmap(bitmap, null, scaledBounds(size, scale),
+                                Paint(Paint.FILTER_BITMAP_FLAG).apply { blendMode = BlendMode.SRC })
+                        } catch (error: Throwable) {
+                            scaled.recycle()
+                            throw error
+                        }
+                        bitmap.recycle()
+                        return scaled
+                    }
                     return bitmap
                 } catch (error: Throwable) {
                     bitmap.recycle()
@@ -55,6 +73,12 @@ internal object Pixel17MonochromeRenderer {
         } finally {
             icon.bounds = oldBounds
         }
+    }
+
+    internal fun scaledBounds(size: Int, scale: Float): Rect {
+        val side = (size * scale).roundToInt().coerceAtLeast(1)
+        val left = (size - side) / 2
+        return Rect(left, left, left + side, left + side)
     }
 
     /**
